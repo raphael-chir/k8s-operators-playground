@@ -1,0 +1,10 @@
+title: CNPG Distributed Topology
+description: Multi-cluster PostgreSQL HA and disaster recovery lab
+infrastructure:
+  clusters: 2
+  workers_per_cluster: 3
+services:
+  cert_manager: true
+  minio: true
+  prometheus: false
+  grafana: false

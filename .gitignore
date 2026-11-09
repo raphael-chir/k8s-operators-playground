@@ -1,0 +1,13 @@
+.DS_Store
+*.log
+.env
+__pycache__/
+*.swp
+.env.*
+!.env.example
+.edb-token
+*.pem
+*.key
+*.kubeconfig
+kubeconfig*
+

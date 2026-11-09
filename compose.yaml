@@ -1,0 +1,23 @@
+name: cnpg-operator-playground   # fixed project name: stable volume names and ownership labels (./playground purge)
+
+services:
+  playground:
+    build: .
+    container_name: cnpg-playground   # fixed name: Kind scripts use it to join the Kind network
+    init: true
+    tty: true
+    stdin_open: true
+    restart: unless-stopped
+    working_dir: /workspace
+    ports:
+      - "127.0.0.1:8080:8080"         # Web UI (embeds the terminal), localhost only
+      - "127.0.0.1:7681:7681"         # raw ttyd terminal, kept for debugging
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock   # Docker-outside-of-Docker
+      - .:/workspace
+      - kube:/root/.kube              # kubeconfig survives restarts
+      - history:/root/.history        # bash history survives restarts
+
+volumes:
+  kube:
+  history:

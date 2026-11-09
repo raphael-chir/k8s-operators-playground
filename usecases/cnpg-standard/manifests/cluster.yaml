@@ -1,0 +1,91 @@
+---
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: minio-storage
+spec:
+  configuration:
+    destinationPath: s3://cnpg/
+    endpointURL: http://minio.object-storage.svc.cluster.local:9000
+    s3Credentials:
+      accessKeyId:
+        name: minio-secret
+        key: MINIO_ACCESS_KEY
+      secretAccessKey:
+        name: minio-secret
+        key: MINIO_SECRET_KEY
+    wal:
+      compression: gzip
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: cnpg-cluster
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.5-standard-bookworm
+
+  plugins:
+  - name: barman-cloud.cloudnative-pg.io
+    isWALArchiver: true
+    parameters:
+      barmanObjectName: minio-storage
+
+  enableSuperuserAccess: true
+  primaryUpdateStrategy: unsupervised
+  primaryUpdateMethod: switchover
+
+  # Reduce the frequency of standby HA slots updates to once every 5 minutes
+  replicationSlots:
+    highAvailability:
+      enabled: true
+
+  postgresql:
+    synchronous:
+      method: any
+      number: 1
+    parameters:
+      pg_stat_statements.max: "10000"
+      pg_stat_statements.track: all
+    pg_hba:
+      - host replication all all trust
+      - hostssl replication all all trust
+      - hostssl replication streaming_replica all cert
+      - host all all 0.0.0.0/0 md5
+
+  # CNPG caches the results of its monitoring queries for 30s by default; 0s runs them at every scrape (2s, see the PodMonitor).
+  monitoring:
+    metricsQueriesTTL: 0s
+
+  storage:
+    size: 1Gi
+  walStorage:
+    size: 1Gi
+  
+  # Scheduling: Ensure pods spread across your 3 disks/nodes
+  affinity:
+    nodeSelector:
+      playground.edb.io/role: postgres
+    podAntiAffinityType: required # Strict: won't start 2 pods on 1 node
+    topologyKey: kubernetes.io/hostname
+
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 1
+    limits:
+      memory: 512Mi
+      cpu: 1
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: cnpg-cluster
+spec:
+  selector:
+    matchLabels:
+      "cnpg.io/cluster": cnpg-cluster
+  podMetricsEndpoints:
+  - port: metrics
+    interval: 2s
+    scrapeTimeout: 1s

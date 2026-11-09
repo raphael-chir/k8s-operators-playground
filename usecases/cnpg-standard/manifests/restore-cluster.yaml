@@ -1,0 +1,49 @@
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: restored-cnpg-cluster
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.5-standard-bookworm
+
+  enableSuperuserAccess: true
+  imagePullPolicy: IfNotPresent
+
+  bootstrap:
+    recovery:
+      source: source
+  externalClusters:
+  - name: source
+    plugin:
+      name: barman-cloud.cloudnative-pg.io
+      parameters:
+        barmanObjectName: minio-storage
+        serverName: cnpg-cluster
+
+  plugins:
+  - name: barman-cloud.cloudnative-pg.io
+    isWALArchiver: true
+    parameters:
+      # Backup Object Store (push, read-write)
+      barmanObjectName: minio-storage
+
+  storage:
+    size: 1Gi
+  walStorage:
+    size: 1Gi
+
+  # Scheduling: Ensure pods spread across your 3 disks/nodes
+  affinity:
+    nodeSelector:
+      playground.edb.io/role: postgres
+    podAntiAffinityType: required # Strict: won't start 2 pods on 1 node
+    topologyKey: kubernetes.io/hostname
+
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 1
+    limits:
+      memory: 512Mi
+      cpu: 1

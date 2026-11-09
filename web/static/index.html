@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CNPG Operator Playground</title>
+  <link rel="stylesheet" href="style.css">
+  <script>
+    /* Apply the saved theme before first paint (no flash). Light is the default. */
+    try { if (localStorage.getItem("theme") === "dark") document.documentElement.setAttribute("data-theme", "dark"); } catch (_) {}
+  </script>
+</head>
+<body>
+  <header>
+    <div class="hl">
+      <button id="sidebar-toggle" type="button" aria-controls="sidebar" aria-expanded="true" title="Hide sidebar">☰</button>
+      <h1>CNPG Operator Playground</h1>
+      <span id="version" class="ver" title="Playground version"></span>
+    </div>
+    <div class="hr">
+      <button id="theme-toggle" type="button" aria-pressed="false" title="Switch to dark mode">☾ Dark</button>
+      <span id="conn" class="conn down"><i></i><span id="conn-text">Connecting…</span></span>
+    </div>
+  </header>
+  <main>
+    <aside id="sidebar">
+      <h2>Use cases</h2>
+      <ul id="usecases"><li class="muted">Loading…</li></ul>
+      <p id="uc-error" class="error" hidden></p>
+    </aside>
+    <section id="terminal">
+      <div id="tabbar">
+        <div id="tabs" role="tablist"></div>
+        <button id="split" type="button" hidden title="Add a terminal next to this one (up to 4)">Split Terminal</button>
+      </div>
+      <div id="panes"></div>
+    </section>
+  </main>
+  <section id="logs" hidden>
+    <div class="logs-head"><strong id="logs-title"></strong><span id="logs-state"></span>
+      <button id="logs-close" type="button">Close</button></div>
+    <pre id="logs-body"></pre>
+  </section>
+  <div id="resources" class="bar muted" aria-live="off">Docker resources: loading…</div>
+  <footer id="statusbar" class="bar"></footer>
+  <dialog id="confirm">
+    <h3>Stop <span id="confirm-name"></span>?</h3>
+    <ul>
+      <li>All Kind clusters belonging to this use case will be deleted.</li>
+      <li>PostgreSQL resources and data stored in those clusters will be lost.</li>
+      <li>Other use cases will remain untouched.</li>
+    </ul>
+    <div class="dialog-actions">
+      <button id="confirm-cancel" type="button">Cancel</button>
+      <button id="confirm-ok" type="button" class="danger">Delete clusters</button>
+    </div>
+  </dialog>
+  <script src="app.js"></script>
+</body>
+</html>

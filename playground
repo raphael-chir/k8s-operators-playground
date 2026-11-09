@@ -1,0 +1,490 @@
+#!/usr/bin/env bash
+# CNPG Operator Playground: the single command-line interface (replaces GNU Make).
+#
+# Two execution contexts, detected automatically:
+#   host       lifecycle commands (doctor, install, start, stop, restart, status, uninstall, purge, version)
+#              work through Docker Compose; infra/usecase commands are routed into the running container.
+#   container  infra and usecase commands run the engine scripts directly (they need Bash 4+, available there).
+# The host-side code is Bash 3.2 compatible (macOS default): no mapfile/readarray, no associative arrays, no set -u.
+#
+# Exit codes: 0 success | 1 failure (failed check, failed command, invalid argument value)
+#             2 usage error (unknown command/option) | 3 the Playground container is not running
+#             Engine scripts keep their own exit codes (e.g. usecase list: 2 when Docker/Kind is unreachable).
+set -o pipefail
+
+# --- paths: relative to this file (symlinks followed), whatever the current directory ----------------------
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "${SOURCE}" ]; do
+  DIR="$(cd -P "$(dirname "${SOURCE}")" && pwd)"
+  SOURCE="$(readlink "${SOURCE}")"
+  case "${SOURCE}" in /*) ;; *) SOURCE="${DIR}/${SOURCE}" ;; esac
+done
+ROOT="$(cd -P "$(dirname "${SOURCE}")" && pwd)"
+VERSION=""
+[ -r "${ROOT}/VERSION" ] && read -r VERSION < "${ROOT}/VERSION"
+VERSION="${VERSION:-unknown}"
+
+PROJECT="cnpg-operator-playground"          # compose.yaml `name:`: owner label of the Compose resources
+CONTAINER="${PLAYGROUND_CONTAINER:-cnpg-playground}"   # compose.yaml container_name
+WEB_PORT=8080
+TTYD_PORT=7681
+URL="http://localhost:${WEB_PORT}"
+PREFIX="${CLUSTER_PREFIX:-cnpg-lab}"
+KIND_LABEL="io.x-k8s.kind.cluster"
+
+# --- output ------------------------------------------------------------------------------------------------
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  C_OK=$'\033[32m'; C_WARN=$'\033[33m'; C_ERR=$'\033[31m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
+else
+  C_OK=""; C_WARN=""; C_ERR=""; C_DIM=""; C_OFF=""
+fi
+say()  { printf '%s\n' "$*"; }
+ok()   { printf '%s[OK]%s   %s\n' "${C_OK}" "${C_OFF}" "$*"; }
+warn() { printf '%s[WARN]%s %s\n' "${C_WARN}" "${C_OFF}" "$*"; }
+bad()  { printf '%s[FAIL]%s %s\n' "${C_ERR}" "${C_OFF}" "$*"; }
+err()  { printf '%sError:%s %s\n' "${C_ERR}" "${C_OFF}" "$*" >&2; }
+hint() { printf '       %s%s%s\n' "${C_DIM}" "$*" "${C_OFF}"; }
+banner() { say "CNPG Operator Playground v${VERSION}"; }
+
+in_container() {
+  case "${PLAYGROUND_CONTEXT:-}" in container) return 0 ;; host) return 1 ;; esac   # explicit override (tests)
+  [ -f /.dockerenv ] && [ "${ROOT}" = "/workspace" ]
+}
+
+usage() {
+  cat <<EOF
+CNPG Operator Playground v${VERSION}
+Usage:
+  ./playground <command> [options]
+
+Lifecycle (run on the host):
+  doctor              Check prerequisites (read-only)
+  install             Build and prepare the Playground
+  start               Start the Playground
+  stop                Stop the Playground (clusters keep running)
+  restart             Restart the Playground [--yes]
+  status              Show the Playground status
+  uninstall           Remove the Playground containers and image [--yes]
+  purge               Remove the Playground and its managed resources [--dry-run] [--yes]
+
+Infrastructure (routed into the running Playground):
+  infra up CLUSTER... [--workers N]   Create Kind cluster(s)
+  infra platform-up CLUSTER...        Install Prometheus/Grafana and MinIO on cluster(s)
+  infra down CLUSTER...               Delete the named cluster(s)
+  infra info [CLUSTER...]             Display node status and Grafana/MinIO URLs
+  infra status [CLUSTER...]           Display the nodes of the clusters
+
+Use cases (routed into the running Playground):
+  usecase list                 List the use cases
+  usecase start NAME           Start a use case (create its clusters, monitoring and MinIO; no PostgreSQL operator)
+  usecase stop NAME [--force]  Stop a use case (delete its clusters; --force skips the confirmation)
+  usecase status NAME          Show the use case's clusters, platform services and scenarios
+
+Other:
+  version             Display the version
+  help                Display this help
+
+Docs: docs/cli.md   Web UI: ${URL}
+EOF
+}
+
+# =============================================================================================================
+# Host helpers
+# =============================================================================================================
+have() { command -v "$1" >/dev/null 2>&1; }
+dc() { docker compose --project-directory "${ROOT}" -f "${ROOT}/compose.yaml" "$@"; }
+
+need_docker() {
+  have docker || { err "Docker is not installed (or not on PATH). Run ./playground doctor."; return 1; }
+  docker info >/dev/null 2>&1 || { err "The Docker daemon is not reachable. Start Docker Desktop / the Docker service. Run ./playground doctor."; return 1; }
+}
+container_running() { [ "$(docker inspect -f '{{.State.Running}}' "${CONTAINER}" 2>/dev/null)" = "true" ]; }
+container_exists()  { docker inspect "${CONTAINER}" >/dev/null 2>&1; }
+
+port_in_use() { ( exec 3<>"/dev/tcp/127.0.0.1/$1" ) 2>/dev/null; }
+# True when the Playground container itself publishes that port.
+port_is_ours() { container_running && [ -n "$(docker port "${CONTAINER}" "$1/tcp" 2>/dev/null)" ]; }
+
+# GET <url> succeeds with HTTP 2xx (curl when present, plain bash otherwise).
+http_ok() {
+  if have curl; then curl -fsS -m 3 -o /dev/null "$1" 2>/dev/null; return; fi
+  local rest="${1#http://}" hostport path host port
+  hostport="${rest%%/*}"; path="/${rest#*/}"; host="${hostport%%:*}"; port="${hostport##*:}"
+  ( exec 3<>"/dev/tcp/${host}/${port}" && printf 'GET %s HTTP/1.0\r\nHost: %s\r\n\r\n' "${path}" "${host}" >&3 && head -n 1 <&3 | grep -q ' 2[0-9][0-9] ' ) 2>/dev/null
+}
+wait_web() {   # PLAYGROUND_WAIT_TIMEOUT (seconds, default 60) bounds the wait for the Web UI
+  local i max="${PLAYGROUND_WAIT_TIMEOUT:-60}"
+  for ((i = 0; i < max; i++)); do
+    if http_ok "http://127.0.0.1:${WEB_PORT}/api/meta"; then return 0; fi
+    sleep 1
+  done
+  return 1
+}
+
+confirm() {   # confirm "question" -> 0 yes; refuses (1) without a terminal
+  local answer
+  if [ ! -t 0 ]; then err "Confirmation required and no terminal available: re-run with --yes."; return 1; fi
+  printf '%s [y/N] ' "$1"; read -r answer
+  case "${answer}" in y|Y|yes|YES|Yes) return 0 ;; *) say "Cancelled."; return 1 ;; esac
+}
+
+# Kind clusters that belong to the playground: Kind's own container label AND the playground naming pattern
+# <prefix>-<usecase>-<n>. One "<cluster> <state>" line per node container.
+owned_nodes() {
+  docker ps -a --filter "label=${KIND_LABEL}" --format "{{.Label \"${KIND_LABEL}\"}} {{.State}}" 2>/dev/null |
+    grep -E "^${PREFIX}-[a-z0-9]+(-[a-z0-9]+)*-[0-9]+ " | sort
+}
+owned_clusters() { owned_nodes | awk '{print $1}' | sort -u; }
+
+# =============================================================================================================
+# doctor
+# =============================================================================================================
+cmd_doctor() {
+  local fails=0 warns=0 os="" arch="" ver major info ncpu mem gib
+  banner; say "Prerequisites"; say
+  if in_container; then err "doctor checks the host: run it outside the Playground container."; return 2; fi
+
+  # 1. operating system
+  case "$(uname -s)" in
+    Darwin) os="macOS $(sw_vers -productVersion 2>/dev/null)"; ok "Operating system: ${os}" ;;
+    Linux)
+      if grep -qi microsoft /proc/version 2>/dev/null; then
+        if uname -r | grep -qi 'microsoft-standard\|wsl2'; then
+          ok "Operating system: Windows (WSL2)"
+          case "${ROOT}" in
+            /mnt/*) warn "The repository is on the Windows filesystem (${ROOT}): builds and file access are slow."
+                    hint "Move it into the WSL2 Linux filesystem, e.g. ~/cnpg-operator-playground"; warns=$((warns + 1)) ;;
+            *) ok "Repository is on the WSL2 Linux filesystem" ;;
+          esac
+        else
+          bad "WSL1 detected: Docker Desktop requires WSL2."; hint "Run: wsl --set-version <distro> 2"; fails=$((fails + 1))
+        fi
+      else
+        os="$(. /etc/os-release 2>/dev/null; printf '%s' "${PRETTY_NAME:-Linux}")"; ok "Operating system: ${os}"
+      fi ;;
+    *) bad "Unsupported operating system: $(uname -s)"; hint "Supported: macOS, Ubuntu Linux, Windows 11 with WSL2."; fails=$((fails + 1)) ;;
+  esac
+
+  # 2. architecture
+  case "$(uname -m)" in
+    arm64|aarch64) arch="arm64"; ok "Architecture: arm64" ;;
+    x86_64|amd64)  arch="amd64"; ok "Architecture: amd64" ;;
+    *) bad "Unsupported architecture: $(uname -m)"; hint "Supported: amd64, arm64."; fails=$((fails + 1)) ;;
+  esac
+
+  # 3-6. Docker
+  if have docker; then
+    ok "Docker CLI: $(docker --version 2>/dev/null | sed 's/Docker version //; s/,.*//')"
+    ver="$(docker compose version --short 2>/dev/null)"; ver="${ver#v}"; major="${ver%%.*}"
+    if [ -n "${ver}" ] && [ "${major}" -ge 2 ] 2>/dev/null; then ok "Docker Compose v2 (${ver})"
+    else
+      bad "Docker Compose v2 not found (the 'docker compose' plugin)."
+      hint "Install the Compose plugin: https://docs.docker.com/compose/install/"; fails=$((fails + 1))
+    fi
+    if info="$(docker info --format '{{.NCPU}} {{.MemTotal}}' 2>/dev/null)"; then
+      ok "Docker daemon connection"
+      ncpu="${info%% *}"; mem="${info##* }"
+      gib=$(( (mem + 512 * 1024 * 1024) / 1024 / 1024 / 1024 ))
+      if [ "${gib}" -ge 12 ]; then ok "Docker memory: ${gib} GB"
+      elif [ "${gib}" -ge 8 ]; then
+        ok "Docker memory: ${gib} GB"; hint "cnpg-distributed-topology (two clusters) is more comfortable with 12 GB."
+      else
+        warn "Docker memory: ${gib} GB (8 GB or more recommended for one use case, 12 GB for two clusters)"
+        hint "Docker Desktop: Settings > Resources > Memory."; warns=$((warns + 1))
+      fi
+      if [ "${ncpu}" -ge 4 ] 2>/dev/null; then ok "Docker CPUs: ${ncpu}"
+      else warn "Docker CPUs: ${ncpu} (4 or more recommended)"; hint "Docker Desktop: Settings > Resources > CPUs."; warns=$((warns + 1)); fi
+    else
+      bad "Cannot connect to the Docker daemon."
+      if [ "$(uname -s)" = "Darwin" ]; then hint "Start Docker Desktop and wait until it reports 'running'."
+      elif grep -qi microsoft /proc/version 2>/dev/null; then hint "Start Docker Desktop on Windows and enable WSL integration for this distro (Settings > Resources > WSL integration)."
+      else hint "Start the service (sudo systemctl start docker) and make sure your user may use it (sudo usermod -aG docker \$USER, then log in again)."; fi
+      fails=$((fails + 1))
+    fi
+  else
+    bad "Docker is not installed (or not on PATH)."
+    if grep -qi microsoft /proc/version 2>/dev/null; then hint "Install Docker Desktop for Windows and enable WSL integration for this distro: https://docs.docker.com/desktop/wsl/"
+    elif [ "$(uname -s)" = "Darwin" ]; then hint "Install Docker Desktop: https://docs.docker.com/desktop/setup/install/mac-install/"
+    else hint "Install Docker Engine and the Compose plugin: https://docs.docker.com/engine/install/ubuntu/"; fi
+    fails=$((fails + 1))
+  fi
+
+  # 7. Docker socket (mounted into the Playground container)
+  if [ -S /var/run/docker.sock ]; then
+    if [ -r /var/run/docker.sock ] && [ -w /var/run/docker.sock ]; then ok "Docker socket (/var/run/docker.sock)"
+    else bad "Docker socket exists but is not accessible to your user."; hint "Add your user to the docker group, then log in again."; fails=$((fails + 1)); fi
+  elif [ "$(uname -s)" = "Darwin" ]; then
+    warn "/var/run/docker.sock not found on the host."
+    hint "Docker Desktop still maps it into the VM; if the Playground cannot reach Docker, enable 'Allow the default Docker socket to be used' in Docker Desktop > Settings > Advanced."; warns=$((warns + 1))
+  else
+    bad "Docker socket /var/run/docker.sock not found."; hint "The Playground mounts it to create the Kind clusters."; fails=$((fails + 1))
+  fi
+
+  # 8. ports
+  local p
+  for p in "${WEB_PORT}" "${TTYD_PORT}"; do
+    if port_in_use "${p}"; then
+      if port_is_ours "${p}"; then ok "Port ${p} in use by this Playground"
+      else bad "Port ${p} is already in use by another process."; hint "Free it (lsof -nP -iTCP:${p} -sTCP:LISTEN shows the owner)."; fails=$((fails + 1)); fi
+    else ok "Port ${p} available"; fi
+  done
+
+  # 9. git (only needed to fetch updates)
+  if have git; then ok "Git: $(git --version | sed 's/git version //')"; else warn "Git not found (only needed to update the repository)."; warns=$((warns + 1)); fi
+
+  say
+  if [ "${fails}" -gt 0 ]; then say "${fails} blocking problem(s). Fix them and run ./playground doctor again."; return 1; fi
+  if [ "${warns}" -gt 0 ]; then say "Environment ready, with ${warns} warning(s)."; else say "Environment ready."; fi
+  return 0
+}
+
+# =============================================================================================================
+# install / start / stop / restart / status
+# =============================================================================================================
+cmd_install() {
+  banner; say
+  cmd_doctor || { err "Prerequisites are not met; nothing was changed."; return 1; }
+  say
+  dc config -q || { err "compose.yaml is not valid."; return 1; }
+  ok "Docker Compose configuration is valid"
+  say "Building the Playground image (this can take a few minutes the first time)..."
+  dc build || { err "The image build failed."; return 1; }
+  ok "Playground image built"
+  say
+  say "Installed. No cluster and no use case was created."
+  say "Next: ./playground start"
+}
+
+cmd_start() {
+  banner
+  need_docker || return 1
+  if in_container; then err "start runs on the host."; return 2; fi
+  dc up -d || { err "docker compose up failed."; return 1; }
+  ok "Playground started"
+  if wait_web; then
+    ok "Web UI ready"
+    say "Open: ${URL}"
+  else
+    err "The Web UI did not answer in time. Check: docker logs ${CONTAINER}"
+    return 1
+  fi
+}
+
+cmd_stop() {
+  banner
+  need_docker || return 1
+  dc stop || { err "docker compose stop failed."; return 1; }
+  ok "Playground stopped"
+  local n
+  n="$(owned_clusters | wc -l | tr -d ' ')"
+  say "Kind clusters are independent Docker containers and keep running (${n} found)."
+  say "Stop a use case before stopping the Playground to delete its clusters, or run ./playground purge."
+  say "Open terminals (one Bash each) end with the container; the clusters and volumes are kept."
+}
+
+cmd_restart() {
+  local yes=0 sessions=0
+  while [ $# -gt 0 ]; do case "$1" in --yes|-y) yes=1 ;; *) err "Unknown option for restart: $1"; return 2 ;; esac; shift; done
+  banner
+  need_docker || return 1
+  if container_running; then
+    sessions="$(docker exec "${CONTAINER}" sh -c 'pgrep -P "$(pgrep -x ttyd | head -1)"' 2>/dev/null | wc -l | tr -d ' ')"
+    if [ "${sessions}" -gt 0 ] && [ "${yes}" -eq 0 ]; then
+      warn "${sessions} open terminal(s) will be closed by the restart (their shell and running command end); open WebSocket connections are dropped."
+      confirm "Restart the Playground?" || return 1
+    fi
+  fi
+  dc restart || { err "docker compose restart failed."; return 1; }
+  ok "Playground restarted (Kind clusters untouched)"
+  if wait_web; then ok "Web UI ready"; say "Open: ${URL}"; else err "The Web UI did not answer in time."; return 1; fi
+}
+
+cmd_status() {
+  local state web="not running" docker_state clusters nodes
+  banner; say
+  say "Version:        ${VERSION}"
+  if ! have docker; then say "Docker:         not installed"; return 1; fi
+  if docker info >/dev/null 2>&1; then docker_state="available"; else docker_state="NOT reachable"; fi
+  say "Docker:         ${docker_state}"
+  if [ "${docker_state}" != "available" ]; then say "Playground:     unknown (Docker unreachable)"; return 1; fi
+  state="$(docker inspect -f '{{.State.Status}}' "${CONTAINER}" 2>/dev/null)"
+  say "Playground:     ${state:-not installed}"
+  if [ "${state}" = "running" ]; then
+    if http_ok "http://127.0.0.1:${WEB_PORT}/api/meta"; then web="${URL} (ready)"; else web="${URL} (not answering)"; fi
+  fi
+  say "Web UI:         ${web}"
+  nodes="$(owned_nodes)"
+  if [ -z "${nodes}" ]; then
+    say "Kind clusters:  none"
+  else
+    say "Kind clusters:"
+    printf '%s\n' "${nodes}" | awk '{n[$1]++; if ($2=="running") r[$1]++} END {for (c in n) printf "  %-48s %d/%d nodes running\n", c, r[c], n[c]}' | sort
+    say "Use cases:      $(owned_clusters | sed -E "s/^${PREFIX}-(.*)-[0-9]+$/\1/" | sort -u | tr '\n' ' ')"
+  fi
+}
+
+# =============================================================================================================
+# uninstall / purge
+# =============================================================================================================
+cmd_uninstall() {
+  local yes=0
+  while [ $# -gt 0 ]; do case "$1" in --yes|-y) yes=1 ;; *) err "Unknown option for uninstall: $1"; return 2 ;; esac; shift; done
+  banner; say
+  need_docker || return 1
+  say "This removes the Playground container, its network and its built image."
+  say "It keeps: Kind clusters and their data, the 'kube' and 'history' volumes (kubeconfig, shell history), your files."
+  [ "${yes}" -eq 1 ] || confirm "Uninstall the Playground?" || return 1
+  dc down --rmi local || { err "docker compose down failed."; return 1; }
+  ok "Playground containers and image removed"
+  say
+  say "Still present:"
+  say "  - Kind clusters: $(owned_clusters | tr '\n' ' ')"
+  say "  - Docker volumes: $(docker volume ls -q --filter "label=com.docker.compose.project=${PROJECT}" | tr '\n' ' ')"
+  say "  - The repository at ${ROOT}"
+  say "Run ./playground purge --dry-run to see what a full cleanup would remove."
+}
+
+cmd_purge() {
+  local yes=0 dry=0 clusters vols name ids failures=0
+  while [ $# -gt 0 ]; do case "$1" in --yes|-y) yes=1 ;; --dry-run|-n) dry=1 ;; *) err "Unknown option for purge: $1"; return 2 ;; esac; shift; done
+  banner; say
+  need_docker || return 1
+  clusters="$(owned_clusters)"
+  vols="$(docker volume ls -q --filter "label=com.docker.compose.project=${PROJECT}")"
+  say "Resources owned by the Playground (established by Kind's cluster label + the '${PREFIX}-<usecase>-<n>' name,"
+  say "and by the Docker Compose project label '${PROJECT}'):"
+  say
+  say "  Kind clusters (all their nodes and the data inside):"
+  if [ -n "${clusters}" ]; then printf '%s\n' "${clusters}" | sed 's/^/    - /'; else say "    (none)"; fi
+  say "  Playground container: $(container_exists && echo "${CONTAINER}" || echo '(none)') (plus its Compose network and image)"
+  say "  Docker volumes (kubeconfig, terminal state, shell history):"
+  if [ -n "${vols}" ]; then printf '%s\n' "${vols}" | sed 's/^/    - /'; else say "    (none)"; fi
+  say
+  say "Never touched: other containers and clusters, the shared 'kind' network, unrelated volumes and images,"
+  say "the repository and your files. No 'docker system prune' or 'docker volume prune' is ever run."
+  say
+  if [ "${dry}" -eq 1 ]; then say "Dry run: nothing was deleted."; return 0; fi
+  if [ "${yes}" -eq 0 ]; then
+    if [ ! -t 0 ]; then err "Confirmation required and no terminal available: re-run with --yes."; return 1; fi
+    printf "This is irreversible. Type 'purge' to continue: "; local answer; read -r answer
+    [ "${answer}" = "purge" ] || { say "Cancelled."; return 1; }
+  fi
+  for name in ${clusters}; do
+    ids="$(docker ps -a -q --filter "label=${KIND_LABEL}=${name}")"
+    if [ -n "${ids}" ] && docker rm -f -v ${ids} >/dev/null 2>&1; then ok "Deleted cluster ${name}"
+    else bad "Could not delete cluster ${name}"; failures=$((failures + 1)); fi
+  done
+  if dc down -v --rmi local >/dev/null 2>&1; then ok "Removed the Playground container, network, volumes and image"
+  else bad "docker compose down -v failed (some Playground resources may remain)"; failures=$((failures + 1)); fi
+  say
+  if [ "${failures}" -gt 0 ]; then err "${failures} resource(s) could not be removed; they were left untouched."; return 1; fi
+  say "Purge complete. The repository is untouched; ./playground install starts over."
+}
+
+# =============================================================================================================
+# Container-side commands (infra, usecase): run the existing engine scripts, no logic duplicated here
+# =============================================================================================================
+require_names() {   # require_names <what> <names...>
+  local what="$1"; shift
+  if [ $# -eq 0 ]; then err "${what} requires at least one cluster name, e.g. ${PREFIX}-mytest-1 (several names allowed)."; return 1; fi
+}
+
+# A plain directory name under usecases/, with the script present.
+run_usecase_script() {   # run_usecase_script <name> <start|stop|status>: the engine runs the lifecycle declared in usecase.yaml
+  local name="$1" action="$2"
+  case "${name}" in ""|*[!a-z0-9-]*) err "A use case name is required (a directory under usecases/)."; return 1 ;; esac
+  if [ ! -f "${ROOT}/usecases/${name}/usecase.yaml" ]; then err "Unknown use case '${name}': usecases/${name}/usecase.yaml not found."; return 1; fi
+  ( cd "${ROOT}" && unset KUBECONFIG && exec bash engine/usecase-run.sh "${action}" "${name}" )
+}
+
+container_infra() {
+  local sub="${1:-}"; [ $# -gt 0 ] && shift
+  local workers="" names=() k="${ROOT}/engine/infrastructure/kind"
+  unset KUBECONFIG    # lifecycle commands always use the shared kubeconfig, like the Web UI backend
+  case "${sub}" in
+    up)
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --workers|-w) [ -n "${2:-}" ] || { err "--workers needs a number."; return 2; }; workers="$2"; shift ;;
+          -*) err "Unknown option for infra up: $1"; return 2 ;;
+          *) names+=("$1") ;;
+        esac; shift
+      done
+      require_names "infra up" ${names[@]+"${names[@]}"} || return 1
+      [ -z "${workers}" ] || export WORKERS="${workers}"
+      bash "${k}/up.sh" "${names[@]}" ;;
+    platform-up) require_names "infra platform-up" "$@" || return 1; bash "${k}/platform-up.sh" "$@" ;;
+    down)        require_names "infra down" "$@" || return 1; bash "${k}/down.sh" "$@" ;;
+    info)        bash "${k}/info.sh" "$@" ;;
+    status)      bash "${k}/status.sh" "$@" ;;
+    ""|-h|--help|help) say "Usage: ./playground infra {up|platform-up|down|info|status} [CLUSTER...]"; [ -n "${sub}" ] ;;
+    *) err "Unknown infra command '${sub}'. Try: up, platform-up, down, info, status."; return 2 ;;
+  esac
+}
+
+container_usecase() {
+  local sub="${1:-}"; [ $# -gt 0 ] && shift
+  local name="" force=0
+  case "${sub}" in
+    list)
+      unset KUBECONFIG
+      local out rc line n c state
+      out="$(bash "${ROOT}/engine/usecase-list.sh")"; rc=$?
+      [ "${rc}" -eq 0 ] || return "${rc}"
+      printf '%-30s %-8s %s\n' NAME STATUS CLUSTERS
+      while IFS=$'\t' read -r n c; do
+        [ -n "${n}" ] || continue
+        state=stopped; [ "${c}" -gt 0 ] && state=running
+        printf '%-30s %-8s %s\n' "${n}" "${state}" "${c}"
+      done <<< "${out}" ;;
+    start|stop|status)
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --force|--yes|-y) [ "${sub}" = stop ] || { err "Option $1 only applies to 'usecase stop'."; return 2; }; force=1 ;;
+          -*) err "Unknown option for usecase ${sub}: $1"; return 2 ;;
+          *) [ -z "${name}" ] || { err "Only one use case name is accepted."; return 2; }; name="$1" ;;
+        esac; shift
+      done
+      [ "${force}" -eq 0 ] || export FORCE=1
+      case "${sub}" in
+        start)  run_usecase_script "${name}" start ;;
+        stop)   run_usecase_script "${name}" stop ;;
+        status) run_usecase_script "${name}" status ;;
+      esac ;;
+    ""|-h|--help|help) say "Usage: ./playground usecase {list|start NAME|stop NAME [--force]|status NAME}"; [ -n "${sub}" ] ;;
+    *) err "Unknown usecase command '${sub}'. Try: list, start, stop, status."; return 2 ;;
+  esac
+}
+
+# Host side: run the same command inside the running container (interactive only when attached to a terminal).
+route_to_container() {
+  need_docker || return 1
+  if ! container_running; then
+    err "The Playground is not running. Start it first: ./playground start"
+    return 3
+  fi
+  # `docker exec` (not `docker compose exec`, which prints an extra "exit status N" line on failures).
+  local flags=(-i)
+  if [ -t 0 ] && [ -t 1 ]; then flags=(-i -t); fi
+  docker exec "${flags[@]}" -w /workspace "${CONTAINER}" /workspace/playground "$@"
+}
+
+# =============================================================================================================
+# dispatch
+# =============================================================================================================
+main() {
+  local cmd="${1:-help}"; [ $# -gt 0 ] && shift
+  case "${cmd}" in
+    -h|--help|help) usage; return 0 ;;
+    -V|--version|version) say "CNPG Operator Playground v${VERSION}"; return 0 ;;
+    doctor|install|start|stop|restart|status|uninstall|purge)
+      if in_container; then err "'${cmd}' runs on the host, not inside the Playground container."; return 2; fi
+      "cmd_${cmd}" "$@" ;;
+    infra|usecase)
+      case "${1:-}" in ""|-h|--help|help) "container_${cmd}" "$@"; return ;; esac   # usage needs no container
+      if in_container; then "container_${cmd}" "$@"; else route_to_container "${cmd}" "$@"; fi ;;
+    *) err "Unknown command '${cmd}'."; say "Run ./playground --help" >&2; return 2 ;;
+  esac
+}
+
+main "$@"

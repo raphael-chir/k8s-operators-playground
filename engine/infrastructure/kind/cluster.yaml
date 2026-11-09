@@ -1,0 +1,13 @@
+# Control-plane publishes the platform NodePorts on free ports of the Docker host
+# (hostPort 0 = chosen by Docker, stable while the cluster exists). Read them back with
+# `docker port <cluster>-control-plane <containerPort>/tcp`; `playground infra info` does it for you.
+# Worker nodes are appended by up.sh according to WORKERS (default 1).
+#   30082 Grafana, 30083 MinIO S3 API, 30084 MinIO Console
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - { containerPort: 30082, hostPort: 0, listenAddress: "127.0.0.1", protocol: TCP }
+      - { containerPort: 30083, hostPort: 0, listenAddress: "127.0.0.1", protocol: TCP }
+      - { containerPort: 30084, hostPort: 0, listenAddress: "127.0.0.1", protocol: TCP }

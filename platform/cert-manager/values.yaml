@@ -1,0 +1,18 @@
+# cert-manager has one scheduling block per component and a strict values schema.
+# Run on the labelled, tainted control-plane node.
+nodeSelector: &platform_nodeselector
+  playground.edb.io/role: platform
+tolerations: &platform_tolerations
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+
+webhook:
+  nodeSelector: *platform_nodeselector
+  tolerations: *platform_tolerations
+cainjector:
+  nodeSelector: *platform_nodeselector
+  tolerations: *platform_tolerations
+startupapicheck:
+  nodeSelector: *platform_nodeselector
+  tolerations: *platform_tolerations

@@ -1,0 +1,10 @@
+title: CNPG Standard
+description: Single-cluster PostgreSQL hands-on lab
+infrastructure:
+  clusters: 1
+  workers_per_cluster: 3
+services:
+  cert_manager: true
+  minio: true
+  prometheus: true
+  grafana: true

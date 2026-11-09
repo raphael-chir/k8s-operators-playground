@@ -1,0 +1,101 @@
+apiVersion: pgd.k8s.enterprisedb.io/v1beta1
+kind: PGDGroup
+metadata:
+  name: pgd-group
+  namespace: default
+  annotations:
+    k8s.pgd.enterprisedb.io/useBarmanCloudPlugin: "true"
+
+spec:
+  # PostgreSQL Community 17 + PGD 6
+  instances: 3
+  witnessInstances: 0
+
+  imageName: docker.enterprisedb.com/k8s/postgresql-pgd:17-pgd6-expanded-ubi9
+
+  imagePullSecrets:
+    - name: edb-pull-secret
+
+  # PGD topology
+  pgd:
+    parentGroup:
+      name: world
+      create: true
+
+  # PostgreSQL configuration
+  cnp:
+    storage:
+      size: 5Gi
+
+  # TLS managed by cert-manager
+  connectivity:
+    tls:
+      mode: verify-ca
+
+      clientCert:
+        caCertSecret: client-ca-key-pair
+        certManager:
+          spec:
+            issuerRef:
+              name: client-ca-issuer
+              kind: Issuer
+              group: cert-manager.io
+
+      serverCert:
+        caCertSecret: server-ca-key-pair
+        certManager:
+          spec:
+            issuerRef:
+              name: server-ca-issuer
+              kind: Issuer
+              group: cert-manager.io
+
+  # Barman Cloud Plugin: backups and WAL archiving to MinIO
+  backup:
+    configuration:
+      barmanObjectStore:
+        destinationPath: s3://cnpg/pgd-group
+        endpointURL: http://minio.object-storage.svc.cluster.local:9000
+
+        s3Credentials:
+          accessKeyId:
+            name: minio-secret
+            key: MINIO_ACCESS_KEY
+
+          secretAccessKey:
+            name: minio-secret
+            key: MINIO_SECRET_KEY
+
+        wal:
+          compression: gzip
+          maxParallel: 4
+
+        data:
+          compression: gzip
+
+      retentionPolicy: "7d"
+
+    # Daily physical backup at 02:00 UTC
+    schedulers:
+      - method: plugin
+        schedule: "0 0 2 * * *"
+        backupOwnerReference: self
+        immediate: true
+
+        pluginConfiguration:
+          name: barman-cloud.cloudnative-pg.io
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: pgd-nodes
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      k8s.pgd.enterprisedb.io/group: pgd-group
+
+  podMetricsEndpoints:
+    - port: metrics
+      interval: 30s

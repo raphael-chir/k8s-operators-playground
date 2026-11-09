@@ -1,0 +1,57 @@
+# minio/minio chart 5.4.0 values for the playground.
+
+# Run on the labelled, tainted control-plane node.
+x-platform-nodeselector: &platform_nodeselector
+  playground.edb.io/role: platform
+x-platform-tolerations: &platform_tolerations
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+
+# These images replace the original MinIO images (multi-arch: amd64 and arm64).
+image:
+  repository: dappros/minio
+  tag: RELEASE.2025-09-07T16-13-09Z
+mcImage:
+  repository: netiedge/minio-mc
+  tag: RELEASE.2025-01-17T23-25-50Z
+
+# Local demo only: fixed credentials (keep in sync with install.sh).
+# MinIO requires a secret key of at least 8 characters: "password" is exactly 8.
+rootUser: admin
+rootPassword: password
+
+mode: standalone
+replicas: 1
+
+persistence:
+  enabled: true
+  size: 10Gi
+
+resources:
+  requests:
+    memory: 512Mi
+  limits:
+    memory: 1Gi
+
+# Fixed NodePorts; Kind maps them to dynamic localhost ports (see engine/infrastructure/kind/cluster.yaml).
+# In-cluster address stays http://minio.object-storage.svc.cluster.local:9000.
+service:
+  type: NodePort
+  nodePort: 30083
+consoleService:
+  type: NodePort
+  nodePort: 30084
+
+nodeSelector: *platform_nodeselector
+tolerations: *platform_tolerations
+
+buckets:
+  - name: cnpg
+    policy: none
+    purge: false
+
+# Applies to the bucket creation (post) jobs too.
+postJob:
+  nodeSelector: *platform_nodeselector
+  tolerations: *platform_tolerations

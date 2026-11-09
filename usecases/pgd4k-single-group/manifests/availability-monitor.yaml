@@ -1,0 +1,211 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pgd-availability-monitor
+data:
+  monitor.sh: |
+    #!/usr/bin/env bash
+    set -uo pipefail
+
+    INTERVAL="${MONITOR_INTERVAL:-0.01}"
+    REPORT_INTERVAL="${REPORT_INTERVAL:-10}"
+    SLOW_THRESHOLD_MS="${SLOW_THRESHOLD_MS:-100}"
+    TABLE="public.pgd_availability_test"
+
+    timestamp() {
+      date -u +"%Y-%m-%dT%H:%M:%S.%3NZ"
+    }
+
+    milliseconds() {
+      date +%s%3N
+    }
+
+    log() {
+      echo "$(timestamp) | $1"
+    }
+
+    log "INFO | Starting PGD availability monitor"
+    log "INFO | Endpoint=${PGHOST}:${PGPORT} | Database=${PGDATABASE}"
+    log "INFO | Transaction interval=${INTERVAL}s"
+    log "INFO | Slow transaction threshold=${SLOW_THRESHOLD_MS}ms"
+
+    until psql -X -q -v ON_ERROR_STOP=1 -c "
+      CREATE TABLE IF NOT EXISTS ${TABLE} (
+        id UUID PRIMARY KEY,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+      );
+    " >/dev/null 2>&1; do
+      log "WARN | Table initialization failed. Retrying in 2s..."
+      sleep 2
+    done
+
+    log "INFO | Monitoring table ready"
+    log "INFO | Monitoring started"
+
+    TOTAL=0
+    SUCCESS=0
+    FAILED=0
+    OUTAGES=0
+
+    LAST_SUCCESS=0
+    OUTAGE_START=0
+    OUTAGE_FAILURES=0
+    LAST_ERROR=""
+
+    LAST_REPORT=$(date +%s)
+
+    PERIOD_SUCCESS=0
+    PERIOD_FAILED=0
+    PERIOD_LATENCY=0
+    PERIOD_MAX_LATENCY=0
+    PERIOD_SLOW=0
+
+    ERROR_FILE=$(mktemp)
+    trap 'rm -f "$ERROR_FILE"' EXIT
+
+    while true; do
+      TOTAL=$((TOTAL + 1))
+      START=$(milliseconds)
+
+      if psql -X -q -v ON_ERROR_STOP=1 \
+        -c "INSERT INTO ${TABLE} (id) VALUES (gen_random_uuid());" \
+        >/dev/null 2>"${ERROR_FILE}"; then
+
+        END=$(milliseconds)
+        LATENCY=$((END - START))
+
+        SUCCESS=$((SUCCESS + 1))
+        PERIOD_SUCCESS=$((PERIOD_SUCCESS + 1))
+        PERIOD_LATENCY=$((PERIOD_LATENCY + LATENCY))
+
+        if (( LATENCY > PERIOD_MAX_LATENCY )); then
+          PERIOD_MAX_LATENCY=$LATENCY
+        fi
+
+        if (( LATENCY >= SLOW_THRESHOLD_MS )); then
+          PERIOD_SLOW=$((PERIOD_SLOW + 1))
+          log "SLOW_TRANSACTION | latency=${LATENCY}ms"
+        fi
+
+        if (( OUTAGE_START > 0 )); then
+          DOWNTIME=$((END - OUTAGE_START))
+          OUTAGES=$((OUTAGES + 1))
+
+          log "RECOVERED | outage=${OUTAGES} | downtime=${DOWNTIME}ms | failed_requests=${OUTAGE_FAILURES} | last_error=${LAST_ERROR}"
+
+          OUTAGE_START=0
+          OUTAGE_FAILURES=0
+          LAST_ERROR=""
+        fi
+
+        LAST_SUCCESS=$END
+
+      else
+        END=$(milliseconds)
+
+        FAILED=$((FAILED + 1))
+        PERIOD_FAILED=$((PERIOD_FAILED + 1))
+        OUTAGE_FAILURES=$((OUTAGE_FAILURES + 1))
+
+        LAST_ERROR=$(tr '\n' ' ' < "$ERROR_FILE")
+
+        if (( OUTAGE_START == 0 )); then
+          if (( LAST_SUCCESS > 0 )); then
+            OUTAGE_START=$LAST_SUCCESS
+          else
+            OUTAGE_START=$START
+          fi
+
+          log "OUTAGE_STARTED | request=${TOTAL} | latency=$((END - START))ms | error=${LAST_ERROR}"
+        fi
+      fi
+
+      NOW=$(date +%s)
+
+      if (( NOW - LAST_REPORT >= REPORT_INTERVAL )); then
+        ELAPSED=$((NOW - LAST_REPORT))
+        TPS=0
+        AVG_LATENCY=0
+
+        if (( ELAPSED > 0 )); then
+          TPS=$((PERIOD_SUCCESS / ELAPSED))
+        fi
+
+        if (( PERIOD_SUCCESS > 0 )); then
+          AVG_LATENCY=$((PERIOD_LATENCY / PERIOD_SUCCESS))
+        fi
+
+        if (( OUTAGE_START > 0 )); then
+          CURRENT_DOWNTIME=$(($(milliseconds) - OUTAGE_START))
+          log "UNAVAILABLE | downtime=${CURRENT_DOWNTIME}ms | failed_requests=${OUTAGE_FAILURES} | last_error=${LAST_ERROR}"
+        else
+          log "HEALTHY | tps=${TPS} | total=${SUCCESS} | failed=${FAILED} | avg_latency=${AVG_LATENCY}ms | max_latency=${PERIOD_MAX_LATENCY}ms | slow_transactions=${PERIOD_SLOW} | outages=${OUTAGES}"
+        fi
+
+        LAST_REPORT=$NOW
+        PERIOD_SUCCESS=0
+        PERIOD_FAILED=0
+        PERIOD_LATENCY=0
+        PERIOD_MAX_LATENCY=0
+        PERIOD_SLOW=0
+      fi
+
+      sleep "$INTERVAL"
+    done
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pgd-availability-monitor
+  labels:
+    app: pgd-availability-monitor
+spec:
+  restartPolicy: Always
+  nodeSelector:
+    node-role.kubernetes.io/control-plane: ""
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+  containers:
+    - name: monitor
+      image: postgres:17
+      command: ["/bin/bash", "/scripts/monitor.sh"]
+      env:
+        - name: PGHOST
+          value: pgd-group-proxy
+        - name: PGPORT
+          value: "5432"
+        - name: PGDATABASE
+          value: app
+        - name: PGUSER
+          valueFrom:
+            secretKeyRef:
+              name: pgd-group-app
+              key: username
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pgd-group-app
+              key: password
+        - name: PGSSLMODE
+          value: require
+        - name: PGCONNECT_TIMEOUT
+          value: "2"
+        - name: PGOPTIONS
+          value: "-c statement_timeout=2000"
+        - name: MONITOR_INTERVAL
+          value: "0.01"
+        - name: REPORT_INTERVAL
+          value: "10"
+        - name: SLOW_THRESHOLD_MS
+          value: "100"
+      volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+          readOnly: true
+  volumes:
+    - name: scripts
+      configMap:
+        name: pgd-availability-monitor
+        defaultMode: 0755

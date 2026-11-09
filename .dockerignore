@@ -1,0 +1,3 @@
+# The image copies nothing from the repository (it is bind-mounted at /workspace), so keep the build context empty:
+# no source, credentials or runtime files are ever sent to the Docker daemon.
+*

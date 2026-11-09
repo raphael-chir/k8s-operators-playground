@@ -1,0 +1,63 @@
+# Interactive shell setup for the web terminal. Loaded by /root/.bashrc; edit it live
+# (no rebuild needed), then run `source ~/.bashrc` or open a new terminal.
+
+# Prompt (Killercoda style): green user@playground, blue full working directory (~ for $HOME), then "#" for root
+# or "$" for other users in the default color, e.g.  root@playground:/workspace#   The host name is a fixed
+# label: inside the container it would be a random container id. Only PS1 is set here; bash expands \w itself,
+# so the path follows every cd.
+PS1='\[\e[1;32m\]\u@playground\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ '
+
+# Colors
+alias ls='ls --color=auto'
+alias ll='ls -lah --color=auto'
+alias grep='grep --color=auto'
+
+# History: kept in the `history` volume (/root/.history), flushed after every command
+# so it survives closing the tab and container restarts.
+HISTFILE=/root/.history/bash_history
+HISTSIZE=10000
+HISTFILESIZE=20000
+HISTCONTROL=ignoredups:erasedups
+shopt -s histappend
+PROMPT_COMMAND='history -a'
+
+# Completion (scripts for docker, kubectl, helm, kind are generated at image build time
+# into /etc/bash_completion.d; git, etc. come with the bash-completion package).
+[ -r /usr/share/bash-completion/bash_completion ] && . /usr/share/bash-completion/bash_completion
+
+# Per-terminal Kubernetes context, with the standard KUBECONFIG list (kubectl, k and helm all honor it).
+# The terminal's own file (created by engine/terminal.sh) holds only "current-context" and comes first, so
+# `kubectl config use-context` changes this terminal only; clusters, users and contexts come from the shared
+# ~/.kube/config, so new clusters show up immediately. A plain shell (no PLAYGROUND_KUBECONFIG) is unchanged.
+# Sourcing this file again in a session created before this scheme adopts it, keeping its file and context.
+if [ -n "${PLAYGROUND_KUBECONFIG:-}" ]; then
+  export KUBECONFIG="${PLAYGROUND_KUBECONFIG}:${HOME}/.kube/config"
+  unset -f kubectl 2>/dev/null   # earlier sessions wrapped kubectl only
+  # kind writes into the first KUBECONFIG file: keep clusters it creates or deletes in the shared one.
+  kind() { KUBECONFIG="${HOME}/.kube/config" command kind "$@"; }
+  _ctx="$(kubectl config view -o jsonpath='{.current-context}' 2>/dev/null)"
+  if [ -n "${_ctx}" ] && ! kubectl config get-contexts -o name 2>/dev/null | grep -Fxq -- "${_ctx}"; then
+    case "${PLAYGROUND_KUBECONFIG}" in
+      */playground-main.yaml)
+        # The Playground terminal is general purpose: it must not stay pinned to a cluster that does not exist
+        # (an older default). Dropping that dead selection only touches this terminal's own file; a valid
+        # selection is never touched.
+        kubectl config unset current-context >/dev/null 2>&1 ;;
+      *)
+        printf '\e[33m! Kubernetes context %s does not exist yet (its cluster is not created): kubectl and helm fail until it does\n  (start the use case, or pick another one: kubectl config get-contexts / use-context).\e[0m\n' "${_ctx}" ;;
+    esac
+  fi
+  unset _ctx
+fi
+
+# The project CLI from any directory (no PATH change): `playground usecase start cnpg-standard`, `playground infra info`.
+playground() { /workspace/playground "$@"; }
+
+# `clear` also sends ESC[3J (erase scrollback), which empties the terminal's scrollback: every scenario starts with it and
+# ui_watch repeats it. -x clears the screen only. Exported so that scenario scripts (child bash processes) use it too.
+clear() { command clear -x "$@"; }
+export -f clear
+
+# Shortcut with completion
+alias k=kubectl
+complete -o default -F __start_kubectl k

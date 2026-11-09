@@ -1,0 +1,25 @@
+" Vim settings for the Playground terminals. Version-controlled in the project (bind-mounted at /workspace), loaded
+" by /root/.vimrc (written at image build time, see the Dockerfile): edit it live, new Vim sessions pick it up.
+set nocompatible
+
+syntax on                     " highlighting for YAML, shell, JSON, ... (filetype detected from name or shebang)
+filetype plugin indent on
+set background=dark           " the web terminal is dark
+
+set number
+set ruler
+set backspace=indent,eol,start
+set autoindent
+set expandtab
+set tabstop=2
+set shiftwidth=2
+set softtabstop=2
+set hlsearch
+set incsearch
+set showmatch
+
+augroup playground_filetypes
+  autocmd!
+  autocmd FileType yaml setlocal expandtab tabstop=2 shiftwidth=2 softtabstop=2
+  autocmd FileType sh   setlocal expandtab tabstop=4 shiftwidth=4 softtabstop=4
+augroup END

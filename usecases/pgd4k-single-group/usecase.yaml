@@ -1,0 +1,10 @@
+title: PGD4K Single Group
+description: Distributed PostgreSQL with EDB PGD for Kubernetes
+infrastructure:
+  clusters: 1
+  workers_per_cluster: 3
+services:
+  cert_manager: true
+  minio: true
+  prometheus: true
+  grafana: false
