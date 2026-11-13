@@ -1,0 +1,10 @@
+title: PG4K TDE
+description: EDB Postgres for Kubernetes with Transparent Data Encryption
+infrastructure:
+  clusters: 1
+  workers_per_cluster: 3
+services:
+  cert_manager: true
+  minio: true
+  prometheus: true
+  grafana: true

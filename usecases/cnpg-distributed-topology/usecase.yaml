@@ -6,5 +6,5 @@ infrastructure:
 services:
   cert_manager: true
   minio: true
-  prometheus: false
-  grafana: false
+  prometheus: true
+  grafana: true

@@ -1,0 +1,41 @@
+apiVersion: postgresql.k8s.enterprisedb.io/v1
+kind: Cluster
+metadata:
+  name: pge
+spec:
+  instances: 1
+
+  imageName: docker.enterprisedb.com/k8s/edb-postgres-extended:18-standard-ubi9
+
+  imagePullSecrets:
+    - name: edb-pull-secret
+
+  storage:
+    size: 1Gi
+
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: pge-store
+
+---
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: pge-store
+spec:
+  configuration:
+    destinationPath: s3://cnpg/
+    endpointURL: http://minio.object-storage.svc.cluster.local:9000
+
+    s3Credentials:
+      accessKeyId:
+        name: minio-secret
+        key: MINIO_ACCESS_KEY
+      secretAccessKey:
+        name: minio-secret
+        key: MINIO_SECRET_KEY
+
+    wal:
+      compression: gzip
