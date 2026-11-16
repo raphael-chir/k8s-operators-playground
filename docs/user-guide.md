@@ -27,7 +27,7 @@ A **use case owns its Kind clusters**: `usecase start` creates them, `usecase st
 |---|---|---|
 | `cnpg-standard` | `cnpg-lab-cnpg-standard-1` | 1 control-plane + 3 workers; a 3-instance CNPG cluster with WAL archiving to MinIO (Barman Cloud plugin) |
 | `cnpg-distributed-topology` | `cnpg-lab-cnpg-distributed-topology-1`, `-2` | Two independent clusters (own Grafana, MinIO, bucket, operator, non-overlapping pod/service CIDRs), connectivity validated. No PostgreSQL yet |
-| `pgd4k-single-group` | `cnpg-lab-pgd4k-single-group-1` | EDB Postgres Distributed for Kubernetes 2.2.0: Start provides monitoring and MinIO only (operators are not installed by Start); scenarios deploy a 3-node PGDGroup. Needs `EDB_SUBSCRIPTION_TOKEN` in the `.env` file at the repository root (copy `.env.example`; [README](../usecases/pgd4k-single-group/README.md)); imported from the previous project, not run in this one yet |
+| `pgd4k-single-group` | `cnpg-lab-pgd4k-single-group-1` | EDB Postgres Distributed for Kubernetes 2.2.0: Start provides monitoring and MinIO only (operators are not installed by Start); scenarios deploy a 3-node PGDGroup. Needs `EDB_SUBSCRIPTION_TOKEN` in the `.env` file at the repository root (copy `.env.example`); imported from the previous project, not run in this one yet |
 
 `usecase start` is idempotent: existing healthy clusters are reused. An existing cluster that does not fit (wrong node count, no host port mappings) stops it with an error; it is **never recreated automatically**. Open the printed URLs in your **host** browser. Credentials: `admin` / `password` (local demo only).
 
