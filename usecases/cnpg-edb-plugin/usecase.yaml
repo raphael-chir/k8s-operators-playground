@@ -1,0 +1,10 @@
+title: CNPG EDB Plugin
+description: EDB plugin to manage PGE and EPAS distributions
+infrastructure:
+  clusters: 1
+  workers_per_cluster: 3
+services:
+  cert_manager: true
+  minio: true
+  prometheus: true
+  grafana: true

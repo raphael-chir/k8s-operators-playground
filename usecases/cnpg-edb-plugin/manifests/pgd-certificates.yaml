@@ -1,0 +1,64 @@
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: selfsigned-issuer
+  namespace: default
+spec:
+  selfSigned: {}
+
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: server-ca
+  namespace: default
+spec:
+  isCA: true
+  commonName: pgd-server-ca
+  secretName: server-ca-key-pair
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: selfsigned-issuer
+    kind: Issuer
+    group: cert-manager.io
+
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: client-ca
+  namespace: default
+spec:
+  isCA: true
+  commonName: pgd-client-ca
+  secretName: client-ca-key-pair
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: selfsigned-issuer
+    kind: Issuer
+    group: cert-manager.io
+
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: server-ca-issuer
+  namespace: default
+spec:
+  ca:
+    secretName: server-ca-key-pair
+
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: client-ca-issuer
+  namespace: default
+spec:
+  ca:
+    secretName: client-ca-key-pair

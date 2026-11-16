@@ -1,0 +1,65 @@
+---
+apiVersion: pgd.k8s.enterprisedb.io/v1beta1
+kind: PGDGroup
+metadata:
+  name: pgd-group
+  namespace: default
+
+spec:
+  # PostgreSQL 17 + PGD 6
+  instances: 3
+  witnessInstances: 0
+
+  imageName: docker.enterprisedb.com/k8s/postgresql-pgd:17-pgd6-expanded-ubi9
+
+  imagePullSecrets:
+    - name: edb-pull-secret
+
+  # PGD topology
+  pgd:
+    parentGroup:
+      name: world
+      create: true
+
+  # PostgreSQL configuration
+  cnp:
+    storage:
+      size: 5Gi
+
+  # TLS managed by cert-manager
+  connectivity:
+    tls:
+      mode: verify-ca
+
+      clientCert:
+        caCertSecret: client-ca-key-pair
+        certManager:
+          spec:
+            issuerRef:
+              name: client-ca-issuer
+              kind: Issuer
+              group: cert-manager.io
+
+      serverCert:
+        caCertSecret: server-ca-key-pair
+        certManager:
+          spec:
+            issuerRef:
+              name: server-ca-issuer
+              kind: Issuer
+              group: cert-manager.io
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: pgd-nodes
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      k8s.pgd.enterprisedb.io/group: pgd-group
+
+  podMetricsEndpoints:
+    - port: metrics
+      interval: 30s
