@@ -1,0 +1,72 @@
+# TLS material for the Klio server and its clients (the Klio sidecars in the PostgreSQL pods).
+# A private CA is created with cert-manager; the server and client certificates are signed by it.
+# Only the standard cert-manager API is used here.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: klio-selfsigned
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: klio-ca
+spec:
+  isCA: true
+  commonName: klio-ca
+  secretName: klio-ca
+  duration: 8760h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: klio-selfsigned
+    kind: Issuer
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: klio-ca
+spec:
+  ca:
+    secretName: klio-ca
+---
+# Server certificate: DNS names of the Service created for the Klio Server named klio-server in namespace default.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: klio-server-tls
+spec:
+  secretName: klio-server-tls
+  commonName: klio-server
+  dnsNames:
+    - klio-server
+    - klio-server.default
+    - klio-server.default.svc
+    - klio-server.default.svc.cluster.local
+  duration: 2160h
+  usages:
+    - server auth
+    - digital signature
+    - key encipherment
+  issuerRef:
+    name: klio-ca
+    kind: Issuer
+---
+# Client certificate used by the Klio plugin sidecars to authenticate against the server (mTLS).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: klio-client-tls
+spec:
+  secretName: klio-client-tls
+  commonName: klio-client
+  duration: 2160h
+  usages:
+    - client auth
+    - digital signature
+    - key encipherment
+  issuerRef:
+    name: klio-ca
+    kind: Issuer

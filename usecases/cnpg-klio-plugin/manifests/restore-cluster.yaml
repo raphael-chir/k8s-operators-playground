@@ -1,0 +1,44 @@
+# New cluster bootstrapped from the Klio server: latest base backup of klio-cluster plus its WAL stream.
+# It does not enable the Klio plugin for itself, so nothing is written back to the server under the source's name.
+#
+# ASSUMPTION: the externalClusters plugin parameters (pluginConfigurationRef, serverName) were written without access
+# to the Klio repository: check them against https://github.com/cloudnative-pg/klio. The Cluster fields are standard CNPG.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: klio-restored
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.5-standard-bookworm
+
+  enableSuperuserAccess: true
+
+  bootstrap:
+    recovery:
+      source: origin
+
+  externalClusters:
+  - name: origin
+    plugin:
+      name: klio.enterprisedb.io
+      parameters:
+        pluginConfigurationRef: klio-config
+        # Name the source cluster was backed up under
+        serverName: klio-cluster
+
+  storage:
+    size: 1Gi
+  walStorage:
+    size: 1Gi
+
+  affinity:
+    nodeSelector:
+      playground.edb.io/role: postgres
+
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 500m
+    limits:
+      memory: 512Mi
+      cpu: 1

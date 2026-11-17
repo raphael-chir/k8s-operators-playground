@@ -1,0 +1,67 @@
+# Klio Server - Tier 1 (PVC) + Tier 2 (MinIO)
+apiVersion: klio.cnpg.io/v1alpha1
+kind: Server
+metadata:
+  name: klio-server
+  namespace: default
+
+spec:
+  image: ghcr.io/cloudnative-pg/klio:v0.0.21
+
+  # Mutual TLS
+  tls:
+    serverIdentity:
+      volume:
+        secret:
+          secretName: klio-server-tls
+      certPath: tls.crt
+      keyPath: tls.key
+
+    clientCa:
+      volume:
+        secret:
+          secretName: klio-client-ca
+          items:
+            - key: ca.crt
+              path: ca.crt
+      path: ca.crt
+
+  # Persistent storage
+  storage:
+    pvcTemplate:
+      accessModes:
+        - ReadWriteOnce
+      resources:
+        requests:
+          storage: 30Gi
+
+  # Tier 1 - Local backups and WAL
+  tier1:
+    encryption:
+      volume:
+        secret:
+          secretName: klio-age
+      keyPath: encryption-key.age
+      identityPath: identity.txt
+
+  # Tier 2 - MinIO S3
+  tier2:
+    encryption:
+      volume:
+        secret:
+          secretName: klio-age
+      keyPath: encryption-key.age
+      identityPath: identity.txt
+
+    s3:
+      bucketName: cnpg
+      endpoint: http://minio.object-storage.svc.cluster.local:9000
+      region: us-east-1
+
+      accessKeyId:
+        name: minio-secret
+        key: MINIO_ACCESS_KEY
+
+      secretAccessKey:
+        name: minio-secret
+        key: MINIO_SECRET_KEY

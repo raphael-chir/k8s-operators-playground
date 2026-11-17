@@ -1,0 +1,15 @@
+# Daily base backup of klio-cluster through the Klio plugin (standard CNPG ScheduledBackup API).
+# immediate: true also takes one backup as soon as the resource is created.
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: klio-cluster-daily
+spec:
+  schedule: "0 0 0 * * *"
+  immediate: true
+  backupOwnerReference: self
+  cluster:
+    name: klio-cluster
+  method: plugin
+  pluginConfiguration:
+    name: klio.enterprisedb.io

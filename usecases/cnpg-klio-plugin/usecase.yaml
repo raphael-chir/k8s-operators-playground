@@ -1,0 +1,10 @@
+title: CNPG Klio Plugin
+description: Backup and recovery of CloudNativePG clusters with the Klio plugin (Klio server, tiered storage, restore)
+infrastructure:
+  clusters: 1
+  workers_per_cluster: 3
+services:
+  cert_manager: true
+  minio: true
+  prometheus: false
+  grafana: false

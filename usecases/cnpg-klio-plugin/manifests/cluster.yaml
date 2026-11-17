@@ -1,0 +1,76 @@
+apiVersion: klio.cnpg.io/v1alpha1
+kind: PluginConfiguration
+metadata:
+  name: klio-config
+spec:
+  clusterName: klio-cluster
+  mode: standard
+  serverAddress: klio-server.default.svc.cluster.local
+
+  tls:
+    clientIdentity:
+      volume:
+        secret:
+          secretName: klio-client-tls
+      certPath: tls.crt
+      keyPath: tls.key
+    serverCa:
+      volume:
+        secret:
+          secretName: klio-ca
+      path: tls.crt
+
+  tier2:
+    enableBackup: true
+    enableRecovery: true
+
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: klio-cluster
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.5-standard-bookworm
+
+  plugins:
+    - name: klio.cnpg.io
+      enabled: true
+      parameters:
+        pluginConfigurationRef: klio-config
+
+  enableSuperuserAccess: true
+
+  primaryUpdateStrategy: unsupervised
+  primaryUpdateMethod: switchover
+
+  replicationSlots:
+    highAvailability:
+      enabled: true
+
+  postgresql:
+    pg_hba:
+    - local replication postgres trust
+    synchronous:
+      method: any
+      number: 1
+
+  storage:
+    size: 1Gi
+
+  walStorage:
+    size: 1Gi
+
+  affinity:
+    nodeSelector:
+      playground.edb.io/role: postgres
+    podAntiAffinityType: required
+    topologyKey: kubernetes.io/hostname
+
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 500m
+    limits:
+      memory: 512Mi
+      cpu: 1

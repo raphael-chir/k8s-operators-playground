@@ -1,0 +1,64 @@
+apiVersion: klio.cnpg.io/v1alpha1
+kind: PluginConfiguration
+metadata:
+  name: klio-restore-config
+spec:
+  clusterName: klio-cluster
+  mode: standard
+  serverAddress: klio-server.default.svc.cluster.local
+
+  tls:
+    clientIdentity:
+      volume:
+        secret:
+          secretName: klio-client-tls
+      certPath: tls.crt
+      keyPath: tls.key
+    serverCa:
+      volume:
+        secret:
+          secretName: klio-ca
+      path: tls.crt
+
+  tier2:
+    enableRecovery: true
+
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: klio-restored
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.5-standard-bookworm
+
+  bootstrap:
+    recovery:
+      source: source
+
+  externalClusters:
+    - name: source
+      plugin:
+        name: klio.cnpg.io
+        parameters:
+          pluginConfigurationRef: klio-restore-config
+
+  storage:
+    size: 1Gi
+
+  walStorage:
+    size: 1Gi
+
+  affinity:
+    nodeSelector:
+      playground.edb.io/role: postgres
+    podAntiAffinityType: preferred
+    topologyKey: kubernetes.io/hostname
+
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 500m
+    limits:
+      memory: 512Mi
+      cpu: 1
