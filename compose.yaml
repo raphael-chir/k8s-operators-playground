@@ -18,6 +18,100 @@ services:
       - kube:/root/.kube              # kubeconfig survives restarts
       - history:/root/.history        # bash history survives restarts
 
+  # Optional AI Use Case Builder (docs/ai-builder.md): started on demand with `./playground ai-builder start`
+  # (profile "ai-builder"), never by `./playground start`. Claude Code runs here and writes only /state (jobs, drafts, working copies)
+  # and its own login volume: usecases/ is READ-ONLY in this container. Publishing is done by `ai-publisher` below, the only writer.
+  ai-builder:
+    profiles: ["ai-builder"]
+    image: cnpg-ai-builder:local        # one image for both services
+    build:
+      context: ./ai-builder
+    container_name: cnpg-ai-builder
+    init: true
+    restart: unless-stopped
+    user: "1000:1000"                  # not root; no Docker socket, no privileges
+    read_only: true                    # root filesystem; /tmp is a tmpfs, the writable paths are the mounts below
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 2g
+    working_dir: /workspace
+    environment:
+      AI_BUILDER_BIND: "0.0.0.0"       # the container's own interface; the host publishes it on 127.0.0.1 only (below)
+      AI_BUILDER_PORT: "8099"
+      AI_BUILDER_ROOT: /workspace
+      AI_BUILDER_STATE_DIR: /state
+      AI_BUILDER_PUBLISHER_URL: http://ai-publisher:8098   # publishing goes through the separate writer; this container cannot write usecases/
+      AI_BUILDER_TOKEN_FILE: /run/secrets/ai_builder_token
+      AI_BUILDER_ALLOWED_HOSTS: ai-builder,cnpg-ai-builder
+      AI_BUILDER_MODEL: ${AI_BUILDER_MODEL:-sonnet}                    # always passed to Claude Code explicitly
+      AI_BUILDER_TIMEOUT: ${AI_BUILDER_TIMEOUT:-900}                   # seconds per Claude Code invocation (whole process group is killed)
+      AI_BUILDER_MAX_BUDGET_USD: ${AI_BUILDER_MAX_BUDGET_USD:-3}       # per invocation; Claude Code stops itself at this spend
+      AI_BUILDER_CONVERSATION_BUDGET_USD: ${AI_BUILDER_CONVERSATION_BUDGET_USD:-10}   # per conversation (API-equivalent estimate): 80% warns, 100% stops
+      AI_BUILDER_CONTEXT_WARN: ${AI_BUILDER_CONTEXT_WARN:-150000}                     # context size (in tokens) above which a conversation is flagged
+    ports:
+      - "127.0.0.1:${AI_BUILDER_PORT:-8099}:8099"   # host loopback only; the Playground container uses http://ai-builder:8099
+    secrets:
+      - ai_builder_token
+    volumes:
+      # Read-only: the service code and ONLY what the agent needs to read. No .env, .git, compose.yaml or tests.
+      - ./ai-builder:/workspace/ai-builder:ro
+      - ./.claude:/workspace/.claude:ro
+      - ./CLAUDE.md:/workspace/CLAUDE.md:ro
+      - ./VERSION:/workspace/VERSION:ro
+      - ./docs:/workspace/docs:ro
+      - ./engine:/workspace/engine:ro
+      - ./platform:/workspace/platform:ro
+      - ./usecases:/workspace/usecases:ro
+      # Read-write: jobs, drafts, conversations and Lab working copies (bind mount: they stay in the repository tree, git-ignored).
+      - ${AI_BUILDER_STATE_DIR:-./.ai-builder}:/state
+      # The Claude login (credentials) lives only here: a dedicated volume, never the repository.
+      - claude-auth:/home/builder
+
+  # The only writer of published Labs (SPEC-023). No Claude Code, no login, no port on the host: it reads the state directory
+  # READ-ONLY, checks the content hash, validates and publishes (atomic swap). The AI Builder cannot write usecases/ itself,
+  # so even a misbehaving Claude Code cannot change a published Lab: that is enforced by the mounts, not by permission flags.
+  ai-publisher:
+    profiles: ["ai-builder"]
+    image: cnpg-ai-builder:local
+    container_name: cnpg-ai-publisher
+    command: ["python3", "/workspace/ai-builder/publisher.py"]
+    init: true
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 256m
+    working_dir: /workspace
+    environment:
+      AI_BUILDER_BIND: "0.0.0.0"       # reachable on the compose network only: no ports are published
+      AI_BUILDER_ROOT: /workspace
+      AI_BUILDER_STATE_DIR: /state
+      AI_BUILDER_PUBLISH_DIR: /publish/usecases
+      AI_BUILDER_TOKEN_FILE: /run/secrets/ai_builder_token
+      AI_BUILDER_ALLOWED_HOSTS: ai-publisher,cnpg-ai-publisher
+      AI_PUBLISHER_PORT: "8098"
+    secrets:
+      - ai_builder_token
+    volumes:
+      - ./ai-builder:/workspace/ai-builder:ro
+      - ./usecases:/workspace/usecases:ro
+      - ${AI_BUILDER_STATE_DIR:-./.ai-builder}:/state:ro
+      - ./usecases:/publish/usecases
+
+secrets:
+  ai_builder_token:
+    file: ${AI_BUILDER_TOKEN_FILE:-./.ai-builder-token}   # created by `./playground ai-builder start` (mode 600, git-ignored)
+
 volumes:
   kube:
   history:
+  claude-auth:

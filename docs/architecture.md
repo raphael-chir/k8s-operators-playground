@@ -111,8 +111,9 @@ Terminal encoding and scrollback (SPEC-007.1.7): the container has no UTF-8 loca
 | `GET /api/terminals` | Terminal tabs (Playground and one per use case); no session state |
 | `GET /api/status?terminal=<id>` | Read-only: effective context, clusters, Grafana/MinIO links |
 | `GET /api/docker/resources` | Read-only cached Docker/Playground resource snapshot |
+| `/api/ai-builder/{health,generate,status,review,approve,publish,auth/*,conversations…}` | Server-side proxy to the optional AI Builder container (`http://ai-builder:8099`, bearer token kept on the server): [AI Builder](ai-builder.md) |
 
-Everything except start/stop/connect is read-only. The specification history is in `docs/specs/`.
+Everything except start/stop/connect and the AI Builder generate/approve/publish/conversation proxy is read-only. In the AI Builder, Claude Code runs in a container where `usecases/` is a read-only mount; published Labs are written only by a separate `ai-publisher` container after an explicit approval (SPEC-023, [AI Builder](ai-builder.md)). The specification history is in `docs/specs/`.
 
 ## Kubernetes configuration persistence
 

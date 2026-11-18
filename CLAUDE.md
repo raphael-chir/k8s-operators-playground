@@ -16,7 +16,8 @@ engine/                         container-side engine: lib/{logger,ui}.sh, useca
                                 infrastructure/kind/*, shell/{bashrc,vimrc}
 platform/                       Helm installers: monitoring, object-storage, cert-manager, operators
 usecases/<name>/                usecase.yaml (incl. services), NN_*.sh scenarios at the use case root, manifests/, README.md: discovered dynamically; start/status/stop are the engine's (engine/usecase-run.sh)
-web/                            FastAPI backend (app.py) + vanilla JS frontend (static/)
+ai-builder/                     AI Use Case Builder (auth.py = browser sign-in through a PTY, container only; conversations.py = persistent chats, SPEC-022, with an editable working copy per Lab, workspace.py, SPEC-023; labfs_mcp.py = the one-file delete tool Claude gets in an approved editing turn, SPEC-026; publishing.py + publisher.py = the ONLY writer of published Labs, run in the separate `ai-publisher` container so that Claude's container has `usecases/` read-only): stdlib Python service + Dockerfile (Claude Code pinned in the image); optional compose profile `ai-builder`, host-mode fallback; drafts in .ai-builder/ (git-ignored): docs/ai-builder.md
+web/                            FastAPI backend (app.py; ai_builder_proxy.py = server-side proxy to the AI Builder, token never sent to the browser) + vanilla JS frontend (static/; ai-builder.js = the AI Lab Assistant panel docked on the right of <main>, ai-markdown.js = its Markdown renderer and highlighter, SPEC-024)
 tests/                          cli.sh (fake-docker CLI tests), engine.sh (project-root resolution), scenarios.sh (cnpg-standard scenarios, fake kubectl), static.sh (syntax, links, version, no Make)
 docs/                           installation, cli, user-guide, architecture, release-checklist, specs/
 ```
@@ -41,7 +42,7 @@ docs/                           installation, cli, user-guide, architecture, rel
 
 ## Testing
 
-Run before finishing a change: `tests/static.sh`, `tests/cli.sh`, `tests/engine.sh`, `tests/monitoring.sh` (helm template, needs network) and `tests/scenarios.sh` (currently out of date with the scenarios: being reworked with them; do not rely on it); for web/engine changes also exercise the API (`/api/usecases`, `/api/status`, `/api/docker/resources`, `/api/meta`) and, when possible, a throwaway use case. Do not claim browser behavior was tested unless it was; list manual checks instead.
+Run before finishing a change: `tests/static.sh`, `tests/ai-builder.sh` (mocks only), `tests/ui.sh` (Node, fake DOM), `tests/ui-browser.sh` (real page in headless Chrome, stubs; skipped without Chrome), `tests/cli.sh`, `tests/engine.sh`, `tests/monitoring.sh` (helm template, needs network) and `tests/scenarios.sh` (currently out of date with the scenarios: being reworked with them; do not rely on it); for web/engine changes also exercise the API (`/api/usecases`, `/api/status`, `/api/docker/resources`, `/api/meta`) and, when possible, a throwaway use case. Do not claim browser behavior was tested unless it was; list manual checks instead.
 
 ## Documentation rule
 

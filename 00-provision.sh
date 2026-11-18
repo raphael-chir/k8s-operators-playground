@@ -16,3 +16,7 @@ echo "  cp .env.example .env     # then set EDB_SUBSCRIPTION_TOKEN in .env"
 echo "The token is used by their operator scenarios (01_install_operators.sh) to create the"
 echo "'edb-pull-secret' for docker.enterprisedb.com. .env is ignored by Git and by the Docker build."
 echo "Community use cases (cnpg-standard) do not need it."
+echo
+echo "Optional AI Lab Assistant:"
+echo "  ./playground ai-builder start"
+echo "  Requires Claude Code authentication."

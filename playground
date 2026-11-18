@@ -80,6 +80,14 @@ Use cases (routed into the running Playground):
   usecase stop NAME [--force]  Stop a use case (delete its clusters; --force skips the confirmation)
   usecase status NAME          Show the use case's clusters, platform services and scenarios
 
+AI Builder (optional container with the Claude Code CLI, API protected by a token):
+  ai-builder start    Build if needed and start the AI Builder container on 127.0.0.1
+  ai-builder stop     Stop only the AI Builder container
+  ai-builder status   Show the container, its address, health and whether a Claude login exists
+  ai-builder login    Sign in to Claude inside the container (interactive, browser URL)
+  ai-builder logout   Sign out (removes the login stored in the claude-auth volume)
+  ai-builder host start|stop|status   Previous host-mode service (temporary fallback; uses the host's claude)
+
 Other:
   version             Display the version
   help                Display this help
@@ -273,7 +281,7 @@ cmd_start() {
 cmd_stop() {
   banner
   need_docker || return 1
-  dc stop || { err "docker compose stop failed."; return 1; }
+  dc --profile ai-builder stop || { err "docker compose stop failed."; return 1; }
   ok "Playground stopped"
   local n
   n="$(owned_clusters | wc -l | tr -d ' ')"
@@ -334,7 +342,7 @@ cmd_uninstall() {
   say "This removes the Playground container, its network and its built image."
   say "It keeps: Kind clusters and their data, the 'kube' and 'history' volumes (kubeconfig, shell history), your files."
   [ "${yes}" -eq 1 ] || confirm "Uninstall the Playground?" || return 1
-  dc down --rmi local || { err "docker compose down failed."; return 1; }
+  dc --profile ai-builder down --rmi local || { err "docker compose down failed."; return 1; }
   ok "Playground containers and image removed"
   say
   say "Still present:"
@@ -374,7 +382,7 @@ cmd_purge() {
     if [ -n "${ids}" ] && docker rm -f -v ${ids} >/dev/null 2>&1; then ok "Deleted cluster ${name}"
     else bad "Could not delete cluster ${name}"; failures=$((failures + 1)); fi
   done
-  if dc down -v --rmi local >/dev/null 2>&1; then ok "Removed the Playground container, network, volumes and image"
+  if dc --profile ai-builder down -v --rmi local >/dev/null 2>&1; then ok "Removed the Playground container, network, volumes and image"
   else bad "docker compose down -v failed (some Playground resources may remain)"; failures=$((failures + 1)); fi
   say
   if [ "${failures}" -gt 0 ]; then err "${failures} resource(s) could not be removed; they were left untouched."; return 1; fi
@@ -470,6 +478,134 @@ route_to_container() {
 }
 
 # =============================================================================================================
+# AI Builder (docs/ai-builder.md). Container mode (default): compose service "ai-builder" with Claude Code inside.
+# Host mode (`ai-builder host ...`, temporary fallback): ai-builder/server.py on the host, using the host's claude.
+# =============================================================================================================
+AIB_PORT="${AI_BUILDER_PORT:-8099}"
+AIB_DIR="${AI_BUILDER_STATE_DIR:-${ROOT}/.ai-builder}"   # tests point it at a temporary directory
+AIB_PID="${AIB_DIR}/server.pid"
+AIB_LOG="${AIB_DIR}/server.log"
+AIB_URL="http://127.0.0.1:${AIB_PORT}"
+
+aib_pid() {   # prints the PID only when it is alive AND is our server (a stale PID file never kills a stranger)
+  local pid
+  [ -r "${AIB_PID}" ] || return 1
+  read -r pid < "${AIB_PID}" || return 1
+  case "${pid}" in ''|*[!0-9]*) return 1 ;; esac
+  ps -p "${pid}" -o command= 2>/dev/null | grep -q "ai-builder/server.py" || return 1
+  echo "${pid}"
+}
+
+cmd_ai_builder_host() {
+  local sub="${1:-}" pid i
+  case "${sub}" in
+    start)
+      banner
+      have python3 || { err "python3 is required (the AI Builder uses only its standard library)."; return 1; }
+      have "${AI_BUILDER_CLAUDE:-claude}" || { err "Claude Code CLI not found. Install it and sign in on this machine first (https://docs.claude.com/en/docs/claude-code)."; return 1; }
+      if pid="$(aib_pid)"; then ok "AI Builder already running (PID ${pid}) at ${AIB_URL}"; return 0; fi
+      if port_in_use "${AIB_PORT}"; then err "Port ${AIB_PORT} is already in use by another process. Set AI_BUILDER_PORT."; return 1; fi
+      mkdir -p "${AIB_DIR}"
+      nohup python3 "${ROOT}/ai-builder/server.py" >> "${AIB_LOG}" 2>&1 < /dev/null &
+      echo $! > "${AIB_PID}"
+      for ((i = 0; i < 10; i++)); do http_ok "${AIB_URL}/health" && break; sleep 1; done
+      if http_ok "${AIB_URL}/health"; then
+        ok "AI Builder started"; say "Listening on ${AIB_URL} (127.0.0.1 only). Log: ${AIB_LOG}"
+      else
+        err "The AI Builder did not answer. See ${AIB_LOG}"; return 1
+      fi ;;
+    stop)
+      banner
+      if pid="$(aib_pid)"; then
+        kill "${pid}" 2>/dev/null
+        for ((i = 0; i < 10; i++)); do kill -0 "${pid}" 2>/dev/null || break; sleep 1; done
+        rm -f "${AIB_PID}"
+        ok "AI Builder stopped (the Playground and the clusters are untouched)"
+      else
+        rm -f "${AIB_PID}"; say "AI Builder is not running."
+      fi ;;
+    status)
+      if pid="$(aib_pid)"; then
+        ok "AI Builder running (PID ${pid}) at ${AIB_URL}"
+        if http_ok "${AIB_URL}/health"; then ok "health: ok"; else warn "health: no answer"; return 1; fi
+      else
+        say "AI Builder is not running. Start it: ./playground ai-builder start"; return 1
+      fi ;;
+    *) err "Unknown ai-builder host command '${sub}'. Try: start, stop, status."; return 2 ;;
+  esac
+}
+
+# --- container mode (default): compose service "ai-builder", profile "ai-builder" -------------------------------------
+AIB_CONTAINER="cnpg-ai-builder"
+AIB_TOKEN_FILE="${AI_BUILDER_TOKEN_FILE:-${ROOT}/.ai-builder-token}"
+AIB_STATE="${AI_BUILDER_STATE_DIR:-${ROOT}/.ai-builder}"
+# compose interpolates these (secret file, state bind mount, published port); only the compose calls see them
+dca() { AI_BUILDER_TOKEN_FILE="${AIB_TOKEN_FILE}" AI_BUILDER_STATE_DIR="${AIB_STATE}" AI_BUILDER_PORT="${AIB_PORT}" dc --profile ai-builder "$@"; }
+aib_running() { [ "$(docker inspect -f '{{.State.Running}}' "${AIB_CONTAINER}" 2>/dev/null)" = "true" ]; }
+
+# The token file is created once (mode 600) and never printed. It is a compose secret: the container reads it, the agent is denied it.
+aib_ensure_token() {
+  [ -s "${AIB_TOKEN_FILE}" ] && return 0
+  ( umask 077; od -An -N32 -tx1 /dev/urandom | tr -d ' \n' > "${AIB_TOKEN_FILE}" ) 2>/dev/null && [ -s "${AIB_TOKEN_FILE}" ] || { err "Could not create ${AIB_TOKEN_FILE}"; return 1; }
+  chmod 600 "${AIB_TOKEN_FILE}"
+}
+
+# GET <path> with the bearer token passed through curl's stdin config (never on a command line, so not visible in `ps`).
+aib_get() {
+  have curl || { err "curl is required to query the AI Builder."; return 1; }
+  [ -s "${AIB_TOKEN_FILE}" ] || return 1
+  { printf 'header = "Authorization: Bearer '; tr -d '\n' < "${AIB_TOKEN_FILE}"; printf '"\n'; } | curl -fsS -m 3 -K - "${AIB_URL}$1" 2>/dev/null
+}
+
+cmd_ai_builder_container() {
+  local sub="${1:-}" i body
+  case "${sub}" in
+    start)
+      banner
+      need_docker || return 1
+      if aib_pid >/dev/null; then err "The host-mode AI Builder is running on port ${AIB_PORT}. Stop it first: ./playground ai-builder host stop"; return 1; fi
+      if ! aib_running && port_in_use "${AIB_PORT}"; then err "Port ${AIB_PORT} is already in use by another process. Set AI_BUILDER_PORT."; return 1; fi
+      mkdir -p "${AIB_STATE}" || { err "Cannot create ${AIB_STATE}"; return 1; }   # created here as you: Docker would create it as root
+      aib_ensure_token || return 1
+      dca up -d --build ai-builder ai-publisher || { err "docker compose up failed for ai-builder."; return 1; }   # ai-publisher: the only writer of usecases/
+      for ((i = 0; i < "${AI_BUILDER_WAIT_TIMEOUT:-60}"; i++)); do aib_get /health >/dev/null && break; sleep 1; done
+      if aib_get /health >/dev/null; then
+        ok "AI Builder started (container ${AIB_CONTAINER})"; say "Listening on ${AIB_URL} (host loopback only). API token: ${AIB_TOKEN_FILE}"
+        body="$(aib_get /health)"
+        case "${body}" in *'"claude_credentials_present": true'*) ;; *) say "Not signed in to Claude yet: ./playground ai-builder login" ;; esac
+      else
+        err "The AI Builder did not answer. Check: docker logs ${AIB_CONTAINER}"; return 1
+      fi ;;
+    stop)
+      banner; need_docker || return 1
+      dca stop ai-builder ai-publisher || { err "docker compose stop failed for ai-builder."; return 1; }
+      ok "AI Builder stopped (the Playground and the clusters are untouched; jobs, drafts and the login are kept)" ;;
+    status)
+      need_docker || return 1
+      if ! aib_running; then say "AI Builder container is not running. Start it: ./playground ai-builder start"; return 1; fi
+      ok "AI Builder container running (${AIB_CONTAINER}) at ${AIB_URL}"
+      if body="$(aib_get /health)"; then
+        ok "health: ok"
+        case "${body}" in *'"claude_credentials_present": true'*) ok "Claude login: present" ;; *) warn "Claude login: none (./playground ai-builder login)" ;; esac
+      else warn "health: no answer (or token mismatch)"; return 1; fi ;;
+    login|logout)
+      need_docker || return 1
+      aib_running || { err "The AI Builder container is not running. Start it first: ./playground ai-builder start"; return 1; }
+      [ -t 0 ] && [ -t 1 ] || { err "'${sub}' is interactive and needs a terminal."; return 1; }
+      [ "${sub}" = login ] && say "Open the URL that Claude prints in your browser, sign in, then paste the code back here."
+      docker exec -it "${AIB_CONTAINER}" claude auth "${sub}" ;;
+    *) err "Unknown ai-builder command '${sub}'. Try: start, stop, status, login, logout, host."; return 2 ;;
+  esac
+}
+
+cmd_ai_builder() {
+  case "${1:-}" in
+    host) shift; cmd_ai_builder_host "$@" ;;
+    *) cmd_ai_builder_container "$@" ;;
+  esac
+}
+
+# =============================================================================================================
 # dispatch
 # =============================================================================================================
 main() {
@@ -480,6 +616,9 @@ main() {
     doctor|install|start|stop|restart|status|uninstall|purge)
       if in_container; then err "'${cmd}' runs on the host, not inside the Playground container."; return 2; fi
       "cmd_${cmd}" "$@" ;;
+    ai-builder)
+      if in_container; then err "'ai-builder' runs on the host, not inside the Playground container."; return 2; fi
+      cmd_ai_builder "$@" ;;
     infra|usecase)
       case "${1:-}" in ""|-h|--help|help) "container_${cmd}" "$@"; return ;; esac   # usage needs no container
       if in_container; then "container_${cmd}" "$@"; else route_to_container "${cmd}" "$@"; fi ;;

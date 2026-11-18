@@ -17,6 +17,10 @@ from pathlib import Path
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
+
+import ai_builder_proxy
+import lab_delete
 
 ROOT = Path(__file__).resolve().parent.parent
 LOG_DIR = Path(tempfile.gettempdir()) / "playground-operations"
@@ -30,6 +34,7 @@ app = FastAPI(title="CNPG Operator Playground", docs_url=None, redoc_url=None, o
 # everything that touches those clusters.
 _ops: dict = {}
 _lock = threading.Lock()
+_gate = lab_delete.DeleteGate(_lock, _ops, lambda: _discover())     # whole-Lab deletion: infrastructure verdict and start/delete coordination
 
 
 def _discover():
@@ -110,6 +115,8 @@ def _launch(name, kind, extra, confirmed=True):
     target = "start" if kind == "start" else "stop"
     with _lock:
         current = _ops.get(name)
+        if _gate.deleting(name):
+            raise HTTPException(409, f"{name} is being deleted")
         if current and current["state"] in ("starting", "stopping"):
             raise HTTPException(409, f"{name} already has an operation in progress ({current['state']})")
         log_file = open(LOG_DIR / f"{name}.log", "wb")
@@ -378,4 +385,207 @@ def docker_resources():
     return {"engine": snap["engine"], "playground": snap["playground"], "updated_at": snap["updated_at"],
             "age_seconds": round(time.time() - snap["_t"], 1), "stale": error is not None, "error": error}
 
-app.mount("/", StaticFiles(directory=Path(__file__).parent / "static", html=True), name="ui")
+# --- AI Builder proxy (docs/ai-builder.md): all logic, limits and security checks live in ai_builder_proxy.py; the token
+# stays on the server. These routes only convert the HTTP request to its arguments and the result to a JSON response.
+try:
+    _aib = ai_builder_proxy.Proxy()
+except ValueError as exc:      # a bad AI_BUILDER_URL must never stop the rest of the Web UI from starting
+    print(f"AI Builder proxy: {exc}; using the default address", flush=True)
+    _aib = ai_builder_proxy.Proxy(ai_builder_proxy.DEFAULT_UPSTREAM)
+
+
+def _aib_response(result):
+    status, payload = result
+    return JSONResponse(payload, status_code=status, headers={"Cache-Control": "no-store"})
+
+
+async def _read_limited(request, limit):
+    """The request body, or None when it is larger than `limit` (never read beyond limit + one chunk)."""
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > limit:
+        return None
+    chunks, size = [], 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > limit:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+@app.get("/api/ai-builder/health")
+def aib_health(request: Request):
+    return _aib_response(_aib.handle("health", request.headers))
+
+
+@app.post("/api/ai-builder/generate")
+async def aib_generate(request: Request):
+    body = await _read_limited(request, ai_builder_proxy.MAX_BODY)
+    return _aib_response(await run_in_threadpool(_aib.handle, "generate", request.headers, body))
+
+
+@app.post("/api/ai-builder/conversations")
+async def aib_conv_create(request: Request):
+    body = await _read_limited(request, ai_builder_proxy.MAX_BODY)
+    return _aib_response(await run_in_threadpool(_aib.handle, "conv_create", request.headers, body))
+
+
+@app.get("/api/ai-builder/conversations")
+def aib_conv_list(request: Request):
+    return _aib_response(_aib.handle("conv_list", request.headers))
+
+
+@app.get("/api/ai-builder/conversations/{conv_id}")
+def aib_conv_get(conv_id: str, request: Request):
+    return _aib_response(_aib.handle("conv_get", request.headers, None, conv_id))
+
+
+@app.post("/api/ai-builder/conversations/{conv_id}/messages")
+async def aib_conv_send(conv_id: str, request: Request):
+    body = await _read_limited(request, ai_builder_proxy.MAX_BODY)
+    return _aib_response(await run_in_threadpool(_aib.handle, "conv_send", request.headers, body, conv_id))
+
+
+@app.delete("/api/ai-builder/conversations/{conv_id}")
+def aib_conv_delete(conv_id: str, request: Request):
+    return _aib_response(_aib.handle("conv_delete", request.headers, None, conv_id))
+
+
+@app.get("/api/ai-builder/conversations/{conv_id}/review")
+def aib_conv_review(conv_id: str, request: Request):
+    return _aib_response(_aib.handle("conv_review", request.headers, None, conv_id))
+
+
+@app.post("/api/ai-builder/conversations/{conv_id}/lab")
+async def aib_conv_lab(conv_id: str, request: Request):
+    body = await _read_limited(request, ai_builder_proxy.MAX_BODY)
+    return _aib_response(await run_in_threadpool(_aib.handle, "conv_lab", request.headers, body, conv_id))
+
+
+@app.post("/api/ai-builder/conversations/{conv_id}/meta")
+async def aib_conv_meta(conv_id: str, request: Request):
+    body = await _read_limited(request, ai_builder_proxy.MAX_BODY)
+    return _aib_response(await run_in_threadpool(_aib.handle, "conv_meta", request.headers, body, conv_id))
+
+
+@app.post("/api/ai-builder/conversations/{conv_id}/context")
+async def aib_conv_context(conv_id: str, request: Request):
+    body = await _read_limited(request, ai_builder_proxy.MAX_BODY)
+    return _aib_response(await run_in_threadpool(_aib.handle, "conv_context", request.headers, body, conv_id))
+
+
+def _lab_of(body):
+    lab = body.get("lab") if isinstance(body, dict) else None
+    return lab if isinstance(lab, str) and lab_delete.LAB_RE.match(lab) else None
+
+
+@app.post("/api/ai-builder/conversations/{conv_id}/delete_check")
+async def aib_delete_check(conv_id: str, request: Request):
+    """Is the Lab of the pending deletion request stopped? The browser names the Lab only: the verdict comes from this server's own Docker query."""
+    body = await _read_limited(request, ai_builder_proxy.MAX_BODY)
+
+    def transform(b):
+        lab = _lab_of(b)
+        return (400, {"error": "lab: not a valid use case name"}) if lab is None else {"lab": lab, "infrastructure": _gate.infra(lab)}
+    return _aib_response(await run_in_threadpool(_aib.handle, "conv_delete_check", request.headers, body, conv_id, transform))
+
+
+@app.post("/api/ai-builder/conversations/{conv_id}/delete_lab")
+async def aib_delete_lab(conv_id: str, request: Request):
+    """Delete a whole Lab (move it to the trash). The Lab is marked as being deleted (no start can begin) and its infrastructure is verified
+    again right now; the AI Builder re-checks the typed name, the pending request and the Lab's content hash, the publisher does the move."""
+    body = await _read_limited(request, ai_builder_proxy.MAX_BODY)
+    held = []
+
+    def transform(b):
+        lab = _lab_of(b)
+        if lab is None:
+            return 400, {"error": "lab: not a valid use case name"}
+        acquired, state = _gate.begin(lab)
+        if acquired:
+            held.append(lab)
+        return {"lab": lab, "confirm": b.get("confirm"), "infrastructure": state}
+    try:
+        return _aib_response(await run_in_threadpool(_aib.handle, "conv_delete_lab", request.headers, body, conv_id, transform))
+    finally:
+        for lab in held:
+            _gate.end(lab)
+
+
+@app.post("/api/ai-builder/conversations/{conv_id}/undo")
+def aib_conv_undo(conv_id: str, request: Request):
+    return _aib_response(_aib.handle("conv_undo", request.headers, None, conv_id))
+
+
+@app.post("/api/ai-builder/conversations/{conv_id}/reset")
+def aib_conv_reset(conv_id: str, request: Request):
+    return _aib_response(_aib.handle("conv_reset", request.headers, None, conv_id))
+
+
+@app.post("/api/ai-builder/conversations/{conv_id}/discard")
+def aib_conv_discard(conv_id: str, request: Request):
+    return _aib_response(_aib.handle("conv_discard", request.headers, None, conv_id))
+
+
+@app.post("/api/ai-builder/conversations/{conv_id}/publish")
+async def aib_conv_publish(conv_id: str, request: Request):
+    body = await _read_limited(request, ai_builder_proxy.MAX_BODY)
+    return _aib_response(await run_in_threadpool(_aib.handle, "conv_publish", request.headers, body, conv_id))
+
+
+@app.get("/api/ai-builder/auth/status")
+def aib_auth_status(request: Request):
+    return _aib_response(_aib.handle("auth_status", request.headers))
+
+
+@app.post("/api/ai-builder/auth/login")
+async def aib_auth_login(request: Request):
+    body = await _read_limited(request, ai_builder_proxy.MAX_BODY)
+    return _aib_response(await run_in_threadpool(_aib.handle, "auth_login", request.headers, body))
+
+
+@app.post("/api/ai-builder/auth/code")
+async def aib_auth_code(request: Request):
+    body = await _read_limited(request, ai_builder_proxy.MAX_BODY)     # the authorization code: forwarded, never logged or stored
+    return _aib_response(await run_in_threadpool(_aib.handle, "auth_code", request.headers, body))
+
+
+@app.post("/api/ai-builder/auth/cancel")
+def aib_auth_cancel(request: Request):
+    return _aib_response(_aib.handle("auth_cancel", request.headers))
+
+
+@app.post("/api/ai-builder/auth/logout")
+def aib_auth_logout(request: Request):
+    return _aib_response(_aib.handle("auth_logout", request.headers))
+
+
+@app.get("/api/ai-builder/status/{job_id}")
+def aib_status(job_id: str, request: Request):
+    return _aib_response(_aib.handle("status", request.headers, None, job_id))
+
+
+@app.get("/api/ai-builder/review/{job_id}")
+def aib_review(job_id: str, request: Request):
+    return _aib_response(_aib.handle("review", request.headers, None, job_id))
+
+
+@app.post("/api/ai-builder/approve/{job_id}")
+def aib_approve(job_id: str, request: Request):
+    return _aib_response(_aib.handle("approve", request.headers, None, job_id))
+
+
+@app.post("/api/ai-builder/publish/{job_id}")
+def aib_publish(job_id: str, request: Request):
+    return _aib_response(_aib.handle("publish", request.headers, None, job_id))
+
+
+class _RevalidatedStatic(StaticFiles):
+    """No heuristic caching: a browser must revalidate (ETag) so a changed ai-builder.js/index.html is not served stale."""
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+app.mount("/", _RevalidatedStatic(directory=Path(__file__).parent / "static", html=True), name="ui")

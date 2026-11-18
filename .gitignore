@@ -11,3 +11,7 @@ __pycache__/
 *.kubeconfig
 kubeconfig*
 
+.ai-builder/
+.ai-builder-token
+
+usecases/.trash/

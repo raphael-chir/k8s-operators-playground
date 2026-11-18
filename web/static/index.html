@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CNPG Operators Playground</title>
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="ai-builder.css">
   <script>
     /* Apply the saved theme before first paint (no flash). Light is the default. */
     try { if (localStorage.getItem("theme") === "dark") document.documentElement.setAttribute("data-theme", "dark"); } catch (_) {}
@@ -18,11 +19,12 @@
       <span id="version" class="ver" title="Playground version"></span>
     </div>
     <div class="hr">
+      <button id="aib-open" type="button" aria-controls="aib" aria-expanded="false" title="Open the AI Lab Assistant">✦ AI Assistant</button>
       <button id="theme-toggle" type="button" aria-pressed="false" title="Switch to dark mode">☾ Dark</button>
       <span id="conn" class="conn down"><i></i><span id="conn-text">Connecting…</span></span>
     </div>
   </header>
-  <main>
+  <main id="app-main">
     <aside id="sidebar">
       <h2>Use cases</h2>
       <ul id="usecases"><li class="muted">Loading…</li></ul>
@@ -35,6 +37,133 @@
       </div>
       <div id="panes"></div>
     </section>
+    <!-- AI Lab Assistant: docked on the right, resizes the workspace instead of covering it (full screen on a narrow window). -->
+    <div id="aib-resizer" class="aib-resizer" role="separator" aria-orientation="vertical" aria-label="Resize the AI Lab Assistant panel"
+         aria-controls="aib" tabindex="0" aria-valuemin="320" aria-valuemax="720" aria-valuenow="440" title="Drag to resize (arrow keys too, double-click to reset)" hidden></div>
+    <aside id="aib" class="aib" aria-label="AI Lab Assistant" hidden>
+      <div class="aib-head">
+        <h3 id="aib-title"><span class="aib-spark" aria-hidden="true">✦</span> AI Lab Assistant</h3>
+        <span id="aib-status" class="aib-badge" role="status">Checking…</span>
+        <span class="aib-head-actions">
+          <button id="aib-connect" type="button" class="primary small" hidden>Connect to Claude</button>
+          <button id="aib-disconnect" type="button" class="small" hidden>Disconnect</button>
+          <button id="aib-close" type="button" class="icon" aria-label="Close the AI Lab Assistant" title="Close">✕</button>
+        </span>
+      </div>
+      <div class="aib-top">
+        <p id="aib-banner" class="aib-banner" role="status" hidden></p>
+        <section id="aib-auth" class="aib-auth" aria-label="Claude sign-in" hidden>
+          <h4>Connect to Claude</h4>
+          <div id="aib-auth-start" class="aib-auth-start">
+            <div class="aib-field">
+              <label for="aib-auth-method">Sign-in method</label>
+              <select id="aib-auth-method">
+                <option value="claudeai">Claude subscription (default)</option>
+                <option value="sso">Single sign-on (SSO)</option>
+                <option value="console">Anthropic Console (API billing)</option>
+              </select>
+            </div>
+            <div class="aib-field">
+              <label for="aib-auth-email">E-mail <span class="aib-optional">(optional, fills the sign-in page)</span></label>
+              <input id="aib-auth-email" type="email" autocomplete="off" spellcheck="false" maxlength="254" placeholder="name@company.com">
+            </div>
+            <div class="aib-actions"><span class="aib-hint">Uses Claude Code's own sign-in: nothing is stored by this page.</span>
+              <button id="aib-auth-begin" type="button" class="primary">Start sign-in</button></div>
+          </div>
+          <p id="aib-auth-starterror" class="aib-error" role="alert" hidden></p>
+          <div id="aib-auth-session" class="aib-auth-session" aria-live="polite" hidden>
+            <p id="aib-auth-text" class="aib-auth-text"></p>
+            <p id="aib-auth-error" class="aib-error" role="alert" hidden></p>
+            <div id="aib-auth-linkrow" class="aib-auth-linkrow" hidden>
+              <a id="aib-auth-link" class="aib-auth-link" href="#" target="_blank" rel="noopener noreferrer">Open the Claude sign-in page</a>
+              <button id="aib-auth-copy" type="button" class="small">Copy link</button>
+            </div>
+            <div id="aib-auth-coderow" class="aib-auth-coderow" hidden>
+              <label for="aib-auth-code">Authorization code</label>
+              <div class="aib-auth-codeinput">
+                <input id="aib-auth-code" type="password" autocomplete="off" spellcheck="false" maxlength="2048" placeholder="Paste the code shown by the sign-in page">
+                <button id="aib-auth-submit" type="button" class="primary">Submit code</button>
+              </div>
+            </div>
+            <div class="aib-actions"><span id="aib-auth-timer" class="aib-hint"></span>
+              <span class="aib-auth-buttons"><button id="aib-auth-cancel" type="button" hidden>Cancel sign-in</button><button id="aib-auth-dismiss" type="button" hidden>Close</button></span></div>
+          </div>
+        </section>
+      </div>
+      <div class="aib-body">
+        <div id="aib-chat-pane" class="aib-chat">
+          <div class="aib-chat-bar">
+            <button id="aib-hist-toggle" type="button" class="aib-icon" aria-expanded="false" aria-controls="aib-hist" aria-label="Conversation history" title="Conversation history">
+              <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false"><path d="M2.5 8a5.5 5.5 0 1 0 1.7-4M2.5 2.5V5H5M8 5v3.2l2 1.3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <span id="aib-conv-title" class="aib-conv-title">Select or start a conversation</span>
+            <button id="aib-conv-new" type="button" class="small">＋ New</button>
+          </div>
+          <div id="aib-hist" class="aib-hist" hidden role="region" aria-label="Conversation history">
+            <input id="aib-hist-search" type="search" placeholder="Search conversations" aria-label="Search conversations by title" autocomplete="off">
+            <ul id="aib-hist-list" class="aib-hist-list"></ul>
+            <div id="aib-hist-pop"></div>
+            <label class="aib-hint aib-hist-arch" for="aib-hist-archived"><input id="aib-hist-archived" type="checkbox"> Show archived</label>
+          </div>
+          <p id="aib-conv-error" class="aib-error" role="alert" hidden></p>
+          <p id="aib-conv-note" class="aib-result ok" role="status" hidden></p>
+          <section id="aib-conv" class="aib-conv" hidden aria-label="Conversation">
+            <div class="aib-conv-head">
+              <span id="aib-conv-state" class="aib-state" hidden></span>
+              <details class="aib-conv-details"><summary>Details</summary>
+              <span id="aib-conv-meta" class="aib-hint"></span>
+              <div id="aib-budget" class="aib-budget" title="Estimated cost (API-equivalent, not a charge) against the conversation budget"><progress id="aib-conv-bar" max="100" value="0" aria-label="Conversation budget used"></progress><span id="aib-conv-budget" class="aib-hint"></span></div>
+              </details>
+            </div>
+            <p id="aib-conv-warn" class="aib-banner" hidden></p>
+            <div class="aib-feed">
+              <div id="aib-conv-messages" class="aib-messages" role="log" aria-label="Conversation messages" aria-live="off" tabindex="0"></div>
+              <button id="aib-scroll-bottom" type="button" class="aib-jump" hidden>↓ New messages</button>
+            </div>
+            <div id="aib-activity" class="aib-activity" role="status" aria-live="polite">
+              <span class="aib-pulse" aria-hidden="true"></span><span id="aib-activity-text"></span>
+            </div>
+            <div id="aib-changes" class="aib-changes" hidden>
+              <div class="aib-changes-head">
+                <select id="aib-changes-lab" class="aib-changes-lab" aria-label="Lab whose changes are shown" hidden></select>
+                <span id="aib-changes-text" class="aib-changes-text"></span>
+                <span class="aib-changes-actions">
+                  <button id="aib-changes-review" type="button" class="small" aria-expanded="false" aria-controls="aib-cr">Review changes</button>
+                  <button id="aib-changes-undo" type="button" class="small">Undo</button>
+                  <button id="aib-changes-reset" type="button" class="small">Reset</button>
+                </span>
+              </div>
+              <p id="aib-changes-conflict" class="aib-banner" hidden>The published Lab changed after this working copy was made, so these changes cannot be published as they are.
+                <button id="aib-changes-discard" type="button" class="small">Start over from the published Lab</button></p>
+              <section id="aib-cr" class="aib-cr" hidden aria-label="Review of the changes">
+                <div class="aib-cr-top">
+                  <span id="aib-cr-validation" class="aib-validation"></span>
+                  <button id="aib-cr-files-toggle" type="button" class="small" aria-expanded="true" aria-controls="aib-cr-files">Files</button>
+                </div>
+                <ul id="aib-cr-errors" class="aib-errors" hidden></ul>
+                <ul id="aib-cr-files" class="aib-cr-files" aria-label="Changed files"></ul>
+                <pre id="aib-cr-diff" class="aib-diff" tabindex="0" aria-label="Changes of the selected file"></pre>
+                <label class="aib-confirm" for="aib-cr-confirm"><input id="aib-cr-confirm" type="checkbox"><span id="aib-cr-confirm-text"></span></label>
+                <div class="aib-actions"><span id="aib-cr-note" class="aib-hint"></span>
+                  <button id="aib-cr-publish" type="button" class="primary small" disabled>Publish</button></div>
+              </section>
+            </div>
+            <p id="aib-cr-result" class="aib-result" role="status" hidden></p>
+            <form id="aib-conv-send-form" class="aib-composer" novalidate>
+              <div class="aib-composer-box">
+                <textarea id="aib-conv-input" rows="1" maxlength="4000" aria-label="Message to the assistant" placeholder="Ask about a Lab, a scenario or the Playground…"></textarea>
+                <span id="aib-send-spinner" class="aib-spinner" aria-hidden="true" hidden></span>
+                <button id="aib-conv-send" type="submit" class="primary small">Send</button>
+              </div>
+              <div class="aib-composer-row">
+                <span id="aib-conv-count" class="aib-hint" hidden>0 / 4000</span>
+                <span class="aib-hint aib-keys">Enter to send · Shift+Enter for a new line</span>
+              </div>
+            </form>
+          </section>
+        </div>
+      </div>
+    </aside>
   </main>
   <section id="logs" hidden>
     <div class="logs-head"><strong id="logs-title"></strong><span id="logs-state"></span>
@@ -56,5 +185,7 @@
     </div>
   </dialog>
   <script src="app.js"></script>
+  <script src="ai-markdown.js"></script>
+  <script src="ai-builder.js"></script>
 </body>
 </html>

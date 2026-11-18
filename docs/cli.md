@@ -77,6 +77,18 @@ These act only on **explicitly named** clusters; there is no delete-all. Names m
 
 Engine scripts keep their own codes (for example `usecase list` returns 2 when Docker or Kind is unreachable). The old Make interface turned every failure into 2; the CLI passes the real code through.
 
+## AI Builder (host)
+
+| Command | Effect |
+|---|---|
+| `ai-builder start` | Builds if needed and starts the optional `cnpg-ai-builder` container (Compose profile `ai-builder`), published on `127.0.0.1:8099`; creates the API token file `.ai-builder-token` (mode 600) once |
+| `ai-builder stop` | Stops only the AI Builder and its publisher (`ai-publisher`, the only container that can write published Labs; `start` starts it too); jobs, drafts, conversations, working copies and the Claude login are kept |
+| `ai-builder status` | Container state, health (bearer token sent through curl's stdin) and whether a Claude login exists |
+| `ai-builder login` / `logout` | Interactive `claude auth login` / `logout` inside the container (needs a terminal). The Web UI offers the same sign-in without a terminal (**Connect to Claude**, [AI Builder](ai-builder.md)) |
+| `ai-builder host start\|stop\|status` | The previous host-mode service (host Python and host `claude`, no token): temporary fallback. Container `start` refuses while it runs |
+
+Host-only. `./playground stop`, `uninstall` and `purge` also cover the container (`purge` removes its `claude-auth` volume, never `.ai-builder/` or `usecases/`). Details: [AI Builder](ai-builder.md).
+
 ## Environment
 
 | Variable | Effect |
@@ -84,6 +96,9 @@ Engine scripts keep their own codes (for example `usecase list` returns 2 when D
 | `PLAYGROUND_WAIT_TIMEOUT` | Seconds to wait for the Web UI after `start`/`restart` (default 60) |
 | `NO_COLOR` | Disable colors |
 | `CLUSTER_PREFIX` | Cluster name prefix (default `cnpg-lab`) |
+| `AI_BUILDER_PORT` | AI Builder host port (default 8099) |
+| `AI_BUILDER_STATE_DIR` | AI Builder state directory (default `.ai-builder/`); tests use a temporary one |
+| `AI_BUILDER_TOKEN_FILE` | AI Builder API token file (default `.ai-builder-token`) |
 | `PLAYGROUND_CONTEXT` | `host` or `container`: override the context detection (tests only) |
 
 ## Examples
