@@ -584,7 +584,7 @@ class ExecutionManager(Base):
         allowed = next(x for x in a if x.startswith("--allowedTools=")).split("=", 1)[1].split(",")
         self.assertIn("WebSearch", allowed); self.assertIn("WebFetch", allowed)
         prompt = builder.build_prompt({"name": "x", "description": "d", "reference_usecase": "cnpg-standard"}, cfg.state / "drafts" / "j" / "x")
-        self.assertIn(".claude/skills/playground-usecase-builder/SKILL.md", prompt); self.assertIn("WebSearch", prompt)
+        self.assertIn("ai-builder/.claude/skills/playground-usecase-builder/SKILL.md", prompt); self.assertIn("WebSearch", prompt)
 
     # --- JSON parsing ---
     def test_parse_full_result(self):

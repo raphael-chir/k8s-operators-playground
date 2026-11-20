@@ -56,34 +56,22 @@
         <section id="aib-auth" class="aib-auth" aria-label="Claude sign-in" hidden>
           <h4>Connect to Claude</h4>
           <div id="aib-auth-start" class="aib-auth-start">
-            <div class="aib-field">
-              <label for="aib-auth-method">Sign-in method</label>
-              <select id="aib-auth-method">
-                <option value="claudeai">Claude subscription (default)</option>
-                <option value="sso">Single sign-on (SSO)</option>
-                <option value="console">Anthropic Console (API billing)</option>
-              </select>
-            </div>
-            <div class="aib-field">
-              <label for="aib-auth-email">E-mail <span class="aib-optional">(optional, fills the sign-in page)</span></label>
-              <input id="aib-auth-email" type="email" autocomplete="off" spellcheck="false" maxlength="254" placeholder="name@company.com">
-            </div>
-            <div class="aib-actions"><span class="aib-hint">Uses Claude Code's own sign-in: nothing is stored by this page.</span>
-              <button id="aib-auth-begin" type="button" class="primary">Start sign-in</button></div>
+            <div class="aib-actions"><span class="aib-hint">Claude subscription. The token is sent once and never stored by this page.</span>
+              <button id="aib-auth-begin" type="button" class="primary">Get token</button></div>
           </div>
           <p id="aib-auth-starterror" class="aib-error" role="alert" hidden></p>
           <div id="aib-auth-session" class="aib-auth-session" aria-live="polite" hidden>
             <p id="aib-auth-text" class="aib-auth-text"></p>
             <p id="aib-auth-error" class="aib-error" role="alert" hidden></p>
             <div id="aib-auth-linkrow" class="aib-auth-linkrow" hidden>
-              <a id="aib-auth-link" class="aib-auth-link" href="#" target="_blank" rel="noopener noreferrer">Open the Claude sign-in page</a>
-              <button id="aib-auth-copy" type="button" class="small">Copy link</button>
+              <a id="aib-auth-link" class="aib-auth-link" href="#" target="_blank" rel="noopener noreferrer">Open the Claude page to get your token</a>
+              <button id="aib-auth-copy" type="button" class="small" hidden>Copy link</button>
             </div>
             <div id="aib-auth-coderow" class="aib-auth-coderow" hidden>
-              <label for="aib-auth-code">Authorization code</label>
+              <label for="aib-auth-code">Token</label>
               <div class="aib-auth-codeinput">
-                <input id="aib-auth-code" type="password" autocomplete="off" spellcheck="false" maxlength="2048" placeholder="Paste the code shown by the sign-in page">
-                <button id="aib-auth-submit" type="button" class="primary">Submit code</button>
+                <input id="aib-auth-code" type="password" autocomplete="off" spellcheck="false" maxlength="2048" placeholder="Paste the token shown by the Claude page">
+                <button id="aib-auth-submit" type="button" class="primary">Connect</button>
               </div>
             </div>
             <div class="aib-actions"><span id="aib-auth-timer" class="aib-hint"></span>

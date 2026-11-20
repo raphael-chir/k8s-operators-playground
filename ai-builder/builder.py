@@ -142,7 +142,7 @@ def validate_request(payload, cfg):
     return {"name": name, "description": desc.strip(), "reference_usecase": ref}
 
 
-SKILL_PATH = ".claude/skills/playground-usecase-builder/SKILL.md"
+SKILL_PATH = "ai-builder/.claude/skills/playground-usecase-builder/SKILL.md"   # read by path (the Skill tool is not enabled for these runs)
 WEB_TOOLS = ["WebSearch", "WebFetch"]       # P2.1: documentation research, in every workflow (no filesystem permission comes with them)
 # Shared by generation and conversations. It complements the skill, never replaces it; it is text, not a permission.
 RESEARCH_RULES = ("Documentation research: you may use WebSearch and WebFetch when the repository does not answer the question or a fact "
@@ -157,7 +157,7 @@ RESEARCH_RULES = ("Documentation research: you may use WebSearch and WebFetch wh
 def build_prompt(req, draft, errors=None):
     rel = draft.relative_to(ROOT) if str(draft).startswith(str(ROOT)) else draft
     base = f"""You are running unattended inside the CNPG Operator Playground repository (current directory = repository root).
-Follow the skill in .claude/skills/playground-usecase-builder/SKILL.md, and read the reference use case
+Follow the skill in {SKILL_PATH}, and read the reference use case
 usecases/{req['reference_usecase']}/ (scenarios, usecase.yaml, manifests, README.md) before writing anything.
 
 TASK: generate the new use case "{req['name']}".

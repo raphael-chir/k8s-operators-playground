@@ -184,7 +184,7 @@ class ReadOnly(Base):
             self.assertIn(tool, deny)
         self.assertNotIn("WebFetch", deny); self.assertNotIn("WebSearch", deny)
         prompt = args[args.index("--append-system-prompt") + 1]
-        self.assertIn(".claude/skills/playground-usecase-builder/SKILL.md", prompt); self.assertIn("official", prompt.lower())
+        self.assertIn("ai-builder/.claude/skills/playground-usecase-builder/SKILL.md", prompt); self.assertIn("official", prompt.lower())
         self.assertNotIn("name: playground-usecase-builder", prompt, "the skill itself is read on demand, never injected")
         for rule in (f"Read(/{self.root}/.env)", f"Read(/{self.root}/.git/**)", "Read(//run/secrets/**)"):
             self.assertIn(rule, deny)

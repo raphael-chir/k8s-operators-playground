@@ -342,12 +342,14 @@ if (typeof document !== "undefined") (function () {
     $("aib-auth-starterror").textContent = session ? "" : S.authNote; show($("aib-auth-starterror"), !session && !!S.authNote);
     show($("aib-auth-linkrow"), d.showLink);
     if (d.showLink) $("aib-auth-link").href = session.url;                   // only an allow-listed https Claude address (isAllowedLoginUrl)
+    if (d.showLink && S.tokenWin && AIBCore.isAllowedLoginUrl(session.url)) { try { S.tokenWin.location.href = session.url; } catch (_) { /* the link stays */ } S.tokenWin = null; }
+    else if (S.tokenWin && !sessionActive() && !S.authBusy && (!session || !d.showLink)) { try { S.tokenWin.close(); } catch (_) { /* closed */ } S.tokenWin = null; }
     show($("aib-auth-coderow"), d.showCode || (!!session && session.state === "verifying"));
     $("aib-auth-code").disabled = $("aib-auth-submit").disabled = !d.showCode || S.authBusy;
     $("aib-auth-timer").textContent = d.active && session.seconds_left ? `Time left ${Math.floor(session.seconds_left / 60)}:${String(session.seconds_left % 60).padStart(2, "0")}` : "";
     show($("aib-auth-cancel"), d.active);
     $("aib-auth-begin").disabled = S.authBusy || d.active;
-    $("aib-auth-begin").textContent = session && (session.state === "failed" || session.state === "cancelled") ? "Try again" : "Start sign-in";
+    $("aib-auth-begin").textContent = session && (session.state === "failed" || session.state === "cancelled") ? "Try again" : "Get token";
     show($("aib-auth-dismiss"), !d.active);
   }
   async function authPost(path, body) {
@@ -358,9 +360,9 @@ if (typeof document !== "undefined") (function () {
   }
   async function beginSignIn() {
     if (S.authBusy || sessionActive()) return;
-    const body = { method: $("aib-auth-method").value };
-    const email = $("aib-auth-email").value.trim();
-    if (email) body.email = email;
+    const body = { method: "claudeai" };                                       // the one method for now: the Claude subscription
+    // Opened inside the click (a popup blocker allows it) and sent to the official page as soon as the sign-in address exists.
+    try { S.tokenWin = window.open("", "_blank"); if (S.tokenWin) S.tokenWin.opener = null; } catch (_) { S.tokenWin = null; }
     S.authNote = "";
     const r = await authPost("/auth/login", body);
     if (r.ok) { S.auth = r.data; S.authOpen = true; pollAuth(); }

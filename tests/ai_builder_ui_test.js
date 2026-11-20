@@ -275,12 +275,11 @@ test("Connect to Claude opens the sign-in; starting it sends one login request w
   assert.strictEqual(h.$("aib-auth").hidden, true); assert.strictEqual(h.$("aib-connect").hidden, false);
   await h.click("aib-connect");
   assert.strictEqual(h.$("aib-auth").hidden, false); assert.strictEqual(h.$("aib-auth-start").hidden, false); assert.strictEqual(h.$("aib-connect").hidden, true);
-  h.$("aib-auth-method").value = "sso"; h.$("aib-auth-email").value = "person@example.co";
   const a = h.$("aib-auth-begin").onclick(), b = h.$("aib-auth-begin").onclick();               // double click
   await Promise.all([a, b]); await tick(20); h.$("aib-close").onclick();
   const logins = h.posts().filter(p => p.url.endsWith("/auth/login"));
   assert.strictEqual(logins.length, 1, "one login request");
-  assert.deepStrictEqual(logins[0].body, { method: "sso", email: "person@example.co" }); assert.strictEqual(logins[0].headers["X-Requested-With"], "playground");
+  assert.deepStrictEqual(logins[0].body, { method: "claudeai" }); assert.strictEqual(logins[0].headers["X-Requested-With"], "playground");
 });
 test("the official sign-in address becomes a safe link and the code field appears; a foreign address is never linked", async () => {
   const h = harness({ routes: signInRoutes({ script: [sess("awaiting_browser")] }) });
@@ -386,7 +385,7 @@ test("the sign-in never leaves /api/ai-builder/ and never carries credential hea
   assert.ok(!JSON.stringify(h.fetches.filter(f => !f.url.endsWith("/auth/code"))).includes(CODE), "the code appears only in the one code request");
 });
 test("static: the sign-in markup exists, the code field is a password input, the link opens safely, and the code is never stored", () => {
-  for (const id of ["aib-connect", "aib-disconnect", "aib-auth", "aib-auth-method", "aib-auth-email", "aib-auth-begin", "aib-auth-text", "aib-auth-error", "aib-auth-starterror", "aib-auth-link", "aib-auth-code", "aib-auth-submit", "aib-auth-cancel", "aib-auth-dismiss"]) assert.ok(HTML_IDS.has(id), id);
+  for (const id of ["aib-connect", "aib-disconnect", "aib-auth", "aib-auth-begin", "aib-auth-text", "aib-auth-error", "aib-auth-starterror", "aib-auth-link", "aib-auth-code", "aib-auth-submit", "aib-auth-cancel", "aib-auth-dismiss"]) assert.ok(HTML_IDS.has(id), id);
   assert.match(HTML, /<input id="aib-auth-code" type="password" autocomplete="off"/); assert.match(HTML, /id="aib-auth-link"[^>]*target="_blank" rel="noopener noreferrer"/);
   assert.ok(!/localStorage\.setItem\([^)]*code/i.test(SRC) && !/store\.set\([^)]*code/i.test(SRC), "no storage of the code");
   assert.ok(!/console\.(log|info|warn|error|debug)/.test(SRC), "the panel never logs");

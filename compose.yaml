@@ -63,7 +63,6 @@ services:
     volumes:
       # Read-only: the service code and ONLY what the agent needs to read. No .env, .git, compose.yaml or tests.
       - ./ai-builder:/workspace/ai-builder:ro
-      - ./.claude:/workspace/.claude:ro
       - ./VERSION:/workspace/VERSION:ro
       - ./docs:/workspace/docs:ro
       - ./engine:/workspace/engine:ro
