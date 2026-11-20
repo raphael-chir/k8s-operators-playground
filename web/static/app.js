@@ -249,8 +249,9 @@ function providerIcon(u) {
 // Sidebar groups: Running first, then Available; an instant case-insensitive filter; each group collapses (kept in memory).
 const searchBox = document.getElementById("uc-search");
 const groupCollapsed = { running: false, available: false };
+let searchTyped = false;     // the filter applies only to text the person typed or pasted, never to a value a browser autofilled into the box
 const matches = u => {
-  const q = searchBox.value.trim().toLowerCase();
+  const q = searchTyped ? searchBox.value.trim().toLowerCase() : "";
   return !q || [u.name, u.title, u.description, u.provider && u.provider.name].some(t => (t || "").toLowerCase().includes(q));
 };
 function ucGroup(key, label, members, selected) {
@@ -265,7 +266,9 @@ function ucGroup(key, label, members, selected) {
   head.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } };
   return [head, ...(groupCollapsed[key] ? [] : members.map(u => ucItem(u, selected)))];
 }
-searchBox.oninput = () => render();
+searchBox.addEventListener("keydown", () => { searchTyped = true; });
+searchBox.addEventListener("paste", () => { searchTyped = true; });
+searchBox.oninput = () => { if (!searchTyped && searchBox.value) searchBox.value = ""; if (!searchBox.value) searchTyped = false; render(); };
 
 function ucItem(u, selected) {
     const op = u.operation;

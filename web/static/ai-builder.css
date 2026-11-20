@@ -355,3 +355,4 @@ main.aib-dragging #panes iframe { pointer-events: none; }        /* a terminal n
 #aib .aib-delete { border-color: var(--danger); }
 #aib .aib-delete label { display: flex; flex-direction: column; gap: 4px; flex: 1 1 100%; }
 #aib .aib-delete input { font: inherit; padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); }
+#aib .aib-decoy { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; pointer-events: none; }

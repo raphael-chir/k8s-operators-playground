@@ -386,7 +386,7 @@ test("the sign-in never leaves /api/ai-builder/ and never carries credential hea
 });
 test("static: the sign-in markup exists, the code field is a password input, the link opens safely, and the code is never stored", () => {
   for (const id of ["aib-connect", "aib-disconnect", "aib-auth", "aib-auth-begin", "aib-auth-text", "aib-auth-error", "aib-auth-starterror", "aib-auth-link", "aib-auth-code", "aib-auth-submit", "aib-auth-cancel", "aib-auth-dismiss"]) assert.ok(HTML_IDS.has(id), id);
-  assert.match(HTML, /<input id="aib-auth-code" type="password" autocomplete="off"/); assert.match(HTML, /id="aib-auth-link"[^>]*target="_blank" rel="noopener noreferrer"/);
+  assert.match(HTML, /<input id="aib-auth-code" type="password" autocomplete="new-password"/); assert.match(HTML, /id="aib-auth-link"[^>]*target="_blank" rel="noopener noreferrer"/);
   assert.ok(!/localStorage\.setItem\([^)]*code/i.test(SRC) && !/store\.set\([^)]*code/i.test(SRC), "no storage of the code");
   assert.ok(!/console\.(log|info|warn|error|debug)/.test(SRC), "the panel never logs");
   assert.ok(!SRC.includes(".href =") || SRC.includes("session.url"), "links come only from the validated session address");

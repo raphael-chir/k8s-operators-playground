@@ -27,7 +27,7 @@
   <main id="app-main">
     <aside id="sidebar">
       <h2>Use cases</h2>
-      <input id="uc-search" type="search" placeholder="Search use cases" aria-label="Search use cases" autocomplete="off" spellcheck="false">
+      <input id="uc-search" type="text" name="uc-filter" placeholder="Search use cases" aria-label="Search use cases" autocomplete="off" data-lpignore="true" data-form-type="other" spellcheck="false">
       <ul id="usecases"><li class="muted">Loading…</li></ul>
       <p id="uc-error" class="error" hidden></p>
     </aside>
@@ -68,9 +68,10 @@
               <button id="aib-auth-copy" type="button" class="small" hidden>Copy link</button>
             </div>
             <div id="aib-auth-coderow" class="aib-auth-coderow" hidden>
+              <input type="text" name="username" autocomplete="username" tabindex="-1" aria-hidden="true" class="aib-decoy" value="" readonly>
               <label for="aib-auth-code">Token</label>
               <div class="aib-auth-codeinput">
-                <input id="aib-auth-code" type="password" autocomplete="off" spellcheck="false" maxlength="2048" placeholder="Paste the token shown by the Claude page">
+                <input id="aib-auth-code" type="password" autocomplete="new-password" spellcheck="false" maxlength="2048" placeholder="Paste the token shown by the Claude page">
                 <button id="aib-auth-submit" type="button" class="primary">Connect</button>
               </div>
             </div>
