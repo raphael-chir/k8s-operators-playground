@@ -3,8 +3,12 @@ FROM debian:bookworm-slim
 ARG TARGETARCH
 ARG DOCKER_VERSION=28.0.1
 ARG KIND_VERSION=v0.33.0
+# k3d: the optional second internal provider (usecase.yaml provider.name k3d); Kind stays the default
+ARG K3D_VERSION=v5.9.0
 ARG KUBECTL_VERSION=v1.37.2
 ARG HELM_VERSION=v4.3.1
+# OpenShift CLI (oc), pinned to the OpenShift 4.22 line (works against OpenShift Local); kubectl stays the Kubernetes client
+ARG OC_VERSION=4.22.14
 ARG TTYD_VERSION=1.7.7
 ARG CNPG_PLUGIN_VERSION=1.30.1
 # EDB PG4K plugin (kubectl cnp): official release assets of github.com/EnterpriseDB/kubectl-cnp
@@ -18,13 +22,14 @@ RUN apt-get update \
 # TARGETARCH is amd64 or arm64; each upstream names architectures differently.
 RUN set -eux; \
     case "${TARGETARCH}" in \
-      amd64) DOCKER_ARCH=x86_64;  TTYD_ARCH=x86_64;  CNPG_ARCH=x86_64 ;; \
-      arm64) DOCKER_ARCH=aarch64; TTYD_ARCH=aarch64; CNPG_ARCH=arm64 ;; \
+      amd64) DOCKER_ARCH=x86_64;  TTYD_ARCH=x86_64;  CNPG_ARCH=x86_64;  OC_ARCH=x86_64  ;; \
+      arm64) DOCKER_ARCH=aarch64; TTYD_ARCH=aarch64; CNPG_ARCH=arm64;  OC_ARCH=aarch64 ;; \
       *) echo "unsupported arch: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-${DOCKER_VERSION}.tgz" \
       | tar -xz --strip-components=1 -C /usr/local/bin docker/docker; \
     curl -fsSL -o /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-${TARGETARCH}"; \
+    curl -fsSL -o /usr/local/bin/k3d "https://github.com/k3d-io/k3d/releases/download/${K3D_VERSION}/k3d-linux-${TARGETARCH}"; \
     curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl"; \
     curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-${TARGETARCH}.tar.gz" \
       | tar -xz --strip-components=1 -C /usr/local/bin "linux-${TARGETARCH}/helm"; \
@@ -33,13 +38,18 @@ RUN set -eux; \
       | tar -xz -C /usr/local/bin kubectl-cnpg; \
     curl -fsSL "https://github.com/EnterpriseDB/kubectl-cnp/releases/download/v${EDB_CNP_PLUGIN_VERSION}/kubectl-cnp_${EDB_CNP_PLUGIN_VERSION}_linux_${CNPG_ARCH}.tar.gz" \
       | tar -xz -C /usr/local/bin kubectl-cnp; \
-    chmod +x /usr/local/bin/*
+    curl -fsSL "https://mirror.openshift.com/pub/openshift-v4/${OC_ARCH}/clients/ocp/${OC_VERSION}/openshift-client-linux.tar.gz" \
+      | tar -xz -C /usr/local/bin oc; \
+    chmod +x /usr/local/bin/*; \
+    oc version --client
 
 # Shell completions (written at build time), and the hook that loads the project shell config.
 RUN docker completion bash > /etc/bash_completion.d/docker \
  && kubectl completion bash > /etc/bash_completion.d/kubectl \
+ && oc completion bash > /etc/bash_completion.d/oc \
  && helm completion bash > /etc/bash_completion.d/helm \
  && kind completion bash > /etc/bash_completion.d/kind \
+ && k3d completion bash > /etc/bash_completion.d/k3d \
  && mkdir -p /root/.history \
  && echo "[ -f /workspace/engine/shell/bashrc ] && . /workspace/engine/shell/bashrc" > /root/.bashrc \
  && echo 'if filereadable("/workspace/engine/shell/vimrc") | source /workspace/engine/shell/vimrc | endif' > /root/.vimrc

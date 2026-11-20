@@ -9,7 +9,7 @@ A local playground to try operators and architecture on Kubernetes ([CloudNative
 
 ## Install
 
-Prerequisites: Docker with Compose v2 (about 8 GB of memory for Docker) and Git. Nothing else is needed on your machine ([details](docs/installation.md)).
+Prerequisites: Docker with Compose v2 (about 8 GB of memory for Docker) and Git. Nothing else is needed on your machine.
 
 ```bash
 git clone <repository-url>
@@ -39,4 +39,4 @@ Deletes the Playground's Kind clusters, volumes, container and image, after a co
 
 ## More
 
-Both scripts wrap the `./playground` command line, documented in [docs/cli.md](docs/cli.md). See also the [user guide](docs/user-guide.md), the [architecture](docs/architecture.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
+Both scripts wrap the `./playground` command line (`./playground help`). See also [CONTRIBUTING.md](CONTRIBUTING.md).

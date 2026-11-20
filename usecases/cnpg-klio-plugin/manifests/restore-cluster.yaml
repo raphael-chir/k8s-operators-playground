@@ -31,10 +31,6 @@ spec:
   walStorage:
     size: 1Gi
 
-  affinity:
-    nodeSelector:
-      playground.edb.io/role: postgres
-
   resources:
     requests:
       memory: 512Mi

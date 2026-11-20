@@ -30,7 +30,7 @@ clusters to prepare a distributed PostgreSQL topology.
 - Verify operator deployments and CRDs
 
 ## Prerequisites
-- Two Kind clusters running
+- Two Kubernetes clusters running
 - cert-manager installed on both clusters
 - Helm CLI available
 
@@ -44,9 +44,7 @@ No PostgreSQL cluster will be created during this scenario.
 
 play() {
 
-  for KUBE_CONTEXT in \
-    kind-cnpg-lab-cnpg-distributed-topology-1 \
-    kind-cnpg-lab-cnpg-distributed-topology-2
+  for KUBE_CONTEXT in "$(usecase_context 1)" "$(usecase_context 2)"
   do
 
     ui_info "Select Kubernetes context: ${KUBE_CONTEXT}"

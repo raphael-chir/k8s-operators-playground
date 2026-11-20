@@ -15,3 +15,5 @@ kubeconfig*
 .ai-builder-token
 
 usecases/.trash/
+.host-metrics.json
+.host-metrics.pid

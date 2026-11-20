@@ -10,9 +10,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../engine/lib/ui.sh"
 source "${SCRIPT_DIR}/../../engine/usecase.sh"
 
-PRIMARY_CONTEXT="kind-cnpg-lab-cnpg-distributed-topology-1"
-REPLICA_CONTEXT="kind-cnpg-lab-cnpg-distributed-topology-2"
-PRIMARY_NODE="cnpg-lab-cnpg-distributed-topology-1-control-plane"
+PRIMARY_CONTEXT="$(usecase_context 1)"
+REPLICA_CONTEXT="$(usecase_context 2)"
 
 show_instruct() {
   ui_note "
@@ -72,7 +71,7 @@ play() {
   ui_command "kubectl create secret generic minio-secret --from-literal=MINIO_ACCESS_KEY=admin --from-literal=MINIO_SECRET_KEY=password --dry-run=client -o yaml | kubectl apply -f -"
   ui_pause
 
-  PRIMARY_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${PRIMARY_NODE}")
+  PRIMARY_IP=$(usecase_cluster_address 1)
 
   ui_info "Cluster 1 PostgreSQL endpoint: ${PRIMARY_IP}:30432"
   ui_info "Inject this IP into the replica manifest at deployment time (source file unchanged)"

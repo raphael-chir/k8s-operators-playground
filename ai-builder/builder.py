@@ -1,8 +1,8 @@
 """AI Use Case Builder: request validation, job lifecycle, Claude Code invocation, draft validation.
 
 Claude Code is started with an argument list (never a shell), from the repository root, with only file tools
-(no Bash) and write permission limited to ONE draft directory. See docs/ai-builder.md for what this does and does
-not guarantee.
+(no Bash) and write permission limited to ONE draft directory. It does not
+guarantee more than that.
 """
 import hashlib
 import json
@@ -157,7 +157,7 @@ RESEARCH_RULES = ("Documentation research: you may use WebSearch and WebFetch wh
 def build_prompt(req, draft, errors=None):
     rel = draft.relative_to(ROOT) if str(draft).startswith(str(ROOT)) else draft
     base = f"""You are running unattended inside the CNPG Operator Playground repository (current directory = repository root).
-Follow the skill in .claude/skills/playground-usecase-builder/SKILL.md, and read CLAUDE.md and the reference use case
+Follow the skill in .claude/skills/playground-usecase-builder/SKILL.md, and read the reference use case
 usecases/{req['reference_usecase']}/ (scenarios, usecase.yaml, manifests, README.md) before writing anything.
 
 TASK: generate the new use case "{req['name']}".

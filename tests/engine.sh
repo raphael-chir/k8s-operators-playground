@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regression tests for project-root resolution (SPEC-007.0 correction): the engine and the CLI must find the project
+# Regression tests for project-root resolution: the engine and the CLI must find the project
 # whatever the working directory, and must not depend on any file that was removed (the old Makefile marker).
 #  A. host-side: the real engine/usecase.sh sourced from a temporary tree, from many directories (no Docker needed),
 #     plus a control run proving the test detects a missing marker.
@@ -32,15 +32,15 @@ out="$(cd / && bash "${T}/usecases/probe/p.sh" 2>&1)"; echo "${out}" | grep -q "
 marker="$(grep -oE '\$\{PROJECT_ROOT\}/[A-Za-z_.-]+"' engine/usecase.sh | head -1 | sed 's/.*}\///; s/"//')"
 [ -n "${marker}" ] && [ -e "${ROOT}/${marker}" ] && [ "${marker}" != "Makefile" ] && r=ok || r=bad; check "root marker used by engine/usecase.sh exists in the repository (${marker})" "$r"
 
-# --- A2. usecase.yaml services (SPEC-012): strict validation, missing = false, scenarios reached through /usecases -----------
-# A copy of the engine next to a throwaway use case: the parser reads usecases/<name>/usecase.yaml relative to common.sh.
+# --- A2. usecase.yaml services: strict validation, missing = false, scenarios reached through /usecases -----------
+# A copy of the engine next to a throwaway use case: the parser reads usecases/<name>/usecase.yaml relative to engine/lib/usecase-manifest.sh.
 M="$(cd "$(mktemp -d)" && pwd -P)"; trap 'rm -rf "${M}" "${T}"' EXIT
 cp -R "${ROOT}/engine" "${M}/engine"; mkdir -p "${M}/usecases"
 manifest() { mkdir -p "${M}/usecases/$1"; printf '%s\n' "${@:2}" > "${M}/usecases/$1/usecase.yaml"; }
 head_="title: T"; desc_="description: D"
 manifest ok "${head_}" "${desc_}" "infrastructure:" "  clusters: 2" "  workers_per_cluster: 3" "services:" "  cert_manager: true" "  minio: false" "  grafana: true"
-chk() { ( source "${M}/engine/infrastructure/kind/common.sh"; usecase_manifest_check "$1" ) 2>&1; }
-svc() { ( source "${M}/engine/infrastructure/kind/common.sh"; usecase_services "$1" ); }
+chk() { ( source "${M}/engine/lib/usecase-manifest.sh"; usecase_manifest_check "$1" ) 2>&1; }
+svc() { ( source "${M}/engine/lib/usecase-manifest.sh"; usecase_services "$1" ); }
 [ -z "$(chk ok)" ] && r=ok || r=bad; check "manifest with a services section is valid" "$r" "$(chk ok)"
 [ "$(svc ok)" = "cert_manager,grafana" ] && r=ok || r=bad; check "enabled services only; false and missing (minio, prometheus) are not installed" "$r" "$(svc ok)"
 manifest nosvc "${head_}" "${desc_}" "infrastructure:" "  clusters: 1" "  workers_per_cluster: 1"
@@ -53,15 +53,15 @@ manifest zero "${head_}" "${desc_}" "infrastructure:" "  clusters: 0" "  workers
 chk zero | grep -q "positive integer" && r=ok || r=bad; check "clusters: 0 still refused" "$r" "$(chk zero)"
 for n in $(ls "${ROOT}/usecases"); do
   [ -f "${ROOT}/usecases/${n}/usecase.yaml" ] || continue
-  s="$(source "${ROOT}/engine/infrastructure/kind/common.sh"; usecase_manifest_check "${n}" 2>&1; usecase_services "${n}")"
+  s="$(source "${ROOT}/engine/lib/usecase-manifest.sh"; usecase_manifest_check "${n}" 2>&1; usecase_services "${n}")"
   # Each use case chooses its services: the manifest is valid and only known service keys are requested.
-  case ",${s}," in *[!a-z_,]*|*,,*) r=bad ;; *) r=ok ;; esac
+  case ",${s}," in ",,") r=ok ;; *[!a-z_,]*|*,,*) r=bad ;; *) r=ok ;; esac   # no service at all is valid (an external use case)
   for k in $(echo "${s}" | tr ',' ' '); do case "${k}" in cert_manager|minio|prometheus|grafana) ;; *) r=bad ;; esac; done
   check "${n}: valid manifest, requests only known services (${s:-none})" "$r" "${s}"
 done
 # A scenario started through the /usecases symlink must still find the project root (pwd -P in engine/usecase.sh).
 L="${M}/link"; mkdir -p "${M}/real/usecases/probe" "${M}/real/engine"; touch "${M}/real/playground"
-cp "${ROOT}/engine/usecase.sh" "${M}/real/engine/usecase.sh"; cp -R "${ROOT}/engine/lib" "${ROOT}/engine/infrastructure" "${M}/real/engine/"
+cp "${ROOT}/engine/usecase.sh" "${M}/real/engine/usecase.sh"; cp -R "${ROOT}/engine/lib" "${ROOT}/engine/providers" "${ROOT}/engine/stacks" "${M}/real/engine/"   # the Kind provider reads engine/stacks/ports.sh
 ln -s "${M}/real/usecases" "${L}"
 printf '#!/usr/bin/env bash\nsource "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../engine/usecase.sh"\necho "ROOT=${PROJECT_ROOT} UC=${USECASE}"\n' > "${M}/real/usecases/probe/p.sh"
 out="$(cd "${L}/probe" && bash ./p.sh 2>&1)"; [ "${out}" = "ROOT=${M}/real UC=probe" ] && r=ok || r=bad

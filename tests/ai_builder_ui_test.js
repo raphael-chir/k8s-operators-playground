@@ -3,7 +3,7 @@
 //  2. the real script is run in a vm sandbox against a FAKE DOM (every element id must exist in index.html) and a
 //     scripted fetch, to check the calls it makes (URLs, headers, order), the double-click guards and the error states;
 //  3. static rules (no innerHTML, no direct port, no credentials).
-// Not covered (manual checklist in docs/ai-builder.md): real rendering, layout, themes, focus behavior.
+// Not covered (manual check): real rendering, layout, themes, focus behavior.
 // Run: tests/ui.sh
 "use strict";
 const fs = require("fs");
@@ -91,7 +91,7 @@ test("only the Playground proxy is used: no port, no token, no credential in the
   assert.ok(SRC.includes('fetch(AIB_API + path'));
   assert.ok(/method !== "GET"\) headers\["X-Requested-With"\] = "playground"/.test(SRC), "the CSRF header is sent with every call that is not a GET (POST and DELETE)");
 });
-// --- layout rules of the docked panel (real rendering is checked in a browser: see docs/ai-builder.md) --------------------------
+// --- layout rules of the docked panel (real rendering is checked in a browser) --------------------------
 test("the panel styles live in their own stylesheet, linked after style.css, which does not mention the panel", () => {
   assert.ok(HTML.indexOf('href="style.css"') > 0 && HTML.indexOf('href="style.css"') < HTML.indexOf('href="ai-builder.css"'));
   assert.ok(!/aib/.test(STYLE), "style.css must stay free of AI Builder rules");
@@ -394,7 +394,7 @@ test("static: the sign-in markup exists, the code field is a password input, the
 });
 
 // ---------------------------------------------------------------------------------------------------------------------
-// 3. Conversations tab (SPEC-022)
+// 3. Conversations tab
 // ---------------------------------------------------------------------------------------------------------------------
 const CID = "c-20261117-120000-abc123";
 const USAGE = { input_tokens: 4, output_tokens: 100, cache_read_input_tokens: 1000, cache_creation_input_tokens: 500 };
@@ -530,7 +530,7 @@ test("conversations only use /api/ai-builder/, never store message text, and are
 });
 
 // ---------------------------------------------------------------------------------------------------------------------
-// 4. Editing a Lab in a conversation (SPEC-023)
+// 4. Editing a Lab in a conversation
 // ---------------------------------------------------------------------------------------------------------------------
 const WS = (changes = { modified: 1, added: 1 }, extra = {}) => {
   const c = { added: 0, modified: 0, deleted: 0, ...changes }; c.total = c.added + c.modified + c.deleted;
@@ -650,7 +650,7 @@ test("editing controls only use /api/ai-builder/, the CSRF header on every POST,
 });
 
 // ---------------------------------------------------------------------------------------------------------------------
-// 5. The redesigned panel (SPEC-024): Markdown, highlighting, docked layout, composer, scrolling, activity, changes
+// 5. The redesigned panel: Markdown, highlighting, docked layout, composer, scrolling, activity, changes
 // ---------------------------------------------------------------------------------------------------------------------
 const { AIBMarkdown: MD, AIBHighlight: HL } = require(path.join(ROOT, "web/static/ai-markdown.js"));
 const mdDoc = { createElement: tag => new El(null, tag), createTextNode: s => { const e = new El(null, "#text"); e.textContent = s; return e; } };

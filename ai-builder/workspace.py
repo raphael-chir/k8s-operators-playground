@@ -1,4 +1,4 @@
-"""Working copy of ONE existing Lab for ONE conversation (SPEC-023).
+"""Working copy of ONE existing Lab for ONE conversation.
 
     <state>/workspaces/<conversation>/
         work/            the editable copy: exactly the files of the Lab (this is what Claude edits and what gets published)

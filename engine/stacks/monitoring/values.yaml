@@ -1,0 +1,95 @@
+# kube-prometheus-stack values for the playground.
+# Based on CloudNativePG docs/src/samples/monitoring/kube-stack-config.yaml,
+# with scheduling on the control-plane and fixed demo credentials.
+
+# Run on the control-plane node: the native node-role label selects it and its NoSchedule taint is tolerated.
+x-platform-scheduling: &platform_nodeselector
+  node-role.kubernetes.io/control-plane: ""
+x-platform-tolerations: &platform_tolerations
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+
+kubeControllerManager:
+  enabled: false
+nodeExporter:
+  enabled: false
+defaultRules:
+  create: true
+  rules:
+    alertmanager: false
+    etcd: false
+    configReloaders: false
+    general: false
+    k8s: true
+    kubeApiserver: false
+    kubeApiserverAvailability: false
+    kubeApiserverSlos: false
+    kubelet: true
+    kubeProxy: false
+    kubePrometheusGeneral: false
+    kubePrometheusNodeRecording: false
+    kubernetesApps: false
+    kubernetesResources: false
+    kubernetesStorage: false
+    kubernetesSystem: false
+    kubeScheduler: false
+    kubeStateMetrics: false
+    network: false
+    node: true
+    nodeExporterAlerting: false
+    nodeExporterRecording: true
+    prometheus: false
+    prometheusOperator: false
+
+prometheus:
+  prometheusSpec:
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    serviceMonitorSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    nodeSelector: *platform_nodeselector
+    tolerations: *platform_tolerations
+
+prometheusOperator:
+  nodeSelector: *platform_nodeselector
+  tolerations: *platform_tolerations
+
+alertmanager:
+  enabled: true
+  alertmanagerSpec:
+    nodeSelector: *platform_nodeselector
+    tolerations: *platform_tolerations
+
+kube-state-metrics:
+  nodeSelector: *platform_nodeselector
+  tolerations: *platform_tolerations
+
+grafana:
+  enabled: true
+  defaultDashboardsEnabled: false
+  sidecar:
+    dashboards:
+      enabled: true
+    datasources:
+      # Minimum query step of the Prometheus datasource: the CNPG PostgreSQL targets are scraped every 2s.
+      defaultDatasourceScrapeInterval: 2s
+  # Local demo only: fixed credentials (keep in sync with install.sh).
+  adminUser: admin
+  adminPassword: password
+  # Anonymous visitors get Viewer (read-only: browse dashboards, change time ranges, use variables), so opening
+  # Grafana from the Web UI needs no login. Never Admin: admin/password still works for changes (/login).
+  # The per-cluster login cookie name is added by install.sh (--set-string on grafana.ini.auth).
+  grafana.ini:
+    auth.anonymous:
+      enabled: true
+      org_role: Viewer
+    # Grafana raises any refresh below 5s to 5s by default: the CNPG dashboard refreshes every 1s.
+    dashboards:
+      min_refresh_interval: 1s
+  # Fixed NodePort; Kind maps it to a dynamic localhost port (see engine/providers/kind/cluster.yaml).
+  service:
+    type: NodePort
+    nodePort: 30082
+  nodeSelector: *platform_nodeselector
+  tolerations: *platform_tolerations

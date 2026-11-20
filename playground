@@ -31,6 +31,7 @@ TTYD_PORT=7681
 URL="http://localhost:${WEB_PORT}"
 PREFIX="${CLUSTER_PREFIX:-cnpg-lab}"
 KIND_LABEL="io.x-k8s.kind.cluster"
+K3D_LABEL="k3d.cluster"                  # k3d marks every container (nodes, load balancer) of a cluster with this label
 
 # --- output ------------------------------------------------------------------------------------------------
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -43,6 +44,7 @@ ok()   { printf '%s[OK]%s   %s\n' "${C_OK}" "${C_OFF}" "$*"; }
 warn() { printf '%s[WARN]%s %s\n' "${C_WARN}" "${C_OFF}" "$*"; }
 bad()  { printf '%s[FAIL]%s %s\n' "${C_ERR}" "${C_OFF}" "$*"; }
 err()  { printf '%sError:%s %s\n' "${C_ERR}" "${C_OFF}" "$*" >&2; }
+info() { printf '[INFO] %s\n' "$*"; }
 hint() { printf '       %s%s%s\n' "${C_DIM}" "$*" "${C_OFF}"; }
 banner() { say "CNPG Operator Playground v${VERSION}"; }
 
@@ -76,8 +78,10 @@ Infrastructure (routed into the running Playground):
 
 Use cases (routed into the running Playground):
   usecase list                 List the use cases
-  usecase start NAME           Start a use case (create its clusters, monitoring and MinIO; no PostgreSQL operator)
-  usecase stop NAME [--force]  Stop a use case (delete its clusters; --force skips the confirmation)
+  usecase start NAME           Start a use case (create its clusters, monitoring and MinIO; no PostgreSQL operator).
+                               provider external: import the context from your kubeconfig and connect (nothing is created)
+  usecase stop NAME [--force]  Stop a use case (delete its clusters; --force skips the confirmation).
+                               provider external: only detaches, the cluster is never touched
   usecase status NAME          Show the use case's clusters, platform services and scenarios
 
 AI Builder (optional container with the Claude Code CLI, API protected by a token):
@@ -92,7 +96,7 @@ Other:
   version             Display the version
   help                Display this help
 
-Docs: docs/cli.md   Web UI: ${URL}
+Web UI: ${URL}
 EOF
 }
 
@@ -100,7 +104,14 @@ EOF
 # Host helpers
 # =============================================================================================================
 have() { command -v "$1" >/dev/null 2>&1; }
-dc() { docker compose --project-directory "${ROOT}" -f "${ROOT}/compose.yaml" "$@"; }
+# PLAYGROUND_HOST_KUBECONFIG: the host kubeconfig file (first entry of KUBECONFIG, else ~/.kube/config), mounted read-only in the container
+# for external use cases. Left unset when the file does not exist (compose then mounts /dev/null: never a directory created on the host).
+dc() {
+  local kc="${KUBECONFIG%%:*}"
+  [ -n "${kc}" ] || kc="${HOME}/.kube/config"
+  if [ -f "${kc}" ]; then export PLAYGROUND_HOST_KUBECONFIG="${kc}"; else unset PLAYGROUND_HOST_KUBECONFIG; fi
+  docker compose --project-directory "${ROOT}" -f "${ROOT}/compose.yaml" "$@"
+}
 
 need_docker() {
   have docker || { err "Docker is not installed (or not on PATH). Run ./playground doctor."; return 1; }
@@ -109,7 +120,13 @@ need_docker() {
 container_running() { [ "$(docker inspect -f '{{.State.Running}}' "${CONTAINER}" 2>/dev/null)" = "true" ]; }
 container_exists()  { docker inspect "${CONTAINER}" >/dev/null 2>&1; }
 
-port_in_use() { ( exec 3<>"/dev/tcp/127.0.0.1/$1" ) 2>/dev/null; }
+# In use only when something answers on 127.0.0.1:<port> AND the port cannot be bound: a bare successful connect is not proof of
+# a listener (a stale forwarder or a network filter can complete the handshake while nothing is bound). Without perl: connect only.
+port_in_use() {
+  ( exec 3<>"/dev/tcp/127.0.0.1/$1" ) 2>/dev/null || return 1
+  have perl || return 0
+  ! perl -MIO::Socket::INET -e 'exit(IO::Socket::INET->new(Listen => 1, LocalAddr => "127.0.0.1", LocalPort => $ARGV[0], Proto => "tcp") ? 0 : 1)' "$1" 2>/dev/null
+}
 # True when the Playground container itself publishes that port.
 port_is_ours() { container_running && [ -n "$(docker port "${CONTAINER}" "$1/tcp" 2>/dev/null)" ]; }
 
@@ -136,10 +153,11 @@ confirm() {   # confirm "question" -> 0 yes; refuses (1) without a terminal
   case "${answer}" in y|Y|yes|YES|Yes) return 0 ;; *) say "Cancelled."; return 1 ;; esac
 }
 
-# Kind clusters that belong to the playground: Kind's own container label AND the playground naming pattern
+# Kind and k3d clusters that belong to the playground: the provider's own container label AND the playground naming pattern
 # <prefix>-<usecase>-<n>. One "<cluster> <state>" line per node container.
 owned_nodes() {
-  docker ps -a --filter "label=${KIND_LABEL}" --format "{{.Label \"${KIND_LABEL}\"}} {{.State}}" 2>/dev/null |
+  { docker ps -a --filter "label=${KIND_LABEL}" --format "{{.Label \"${KIND_LABEL}\"}} {{.State}}"
+    docker ps -a --filter "label=${K3D_LABEL}" --format "{{.Label \"${K3D_LABEL}\"}} {{.State}}"; } 2>/dev/null |
     grep -E "^${PREFIX}-[a-z0-9]+(-[a-z0-9]+)*-[0-9]+ " | sort
 }
 owned_clusters() { owned_nodes | awk '{print $1}' | sort -u; }
@@ -233,12 +251,24 @@ cmd_doctor() {
   for p in "${WEB_PORT}" "${TTYD_PORT}"; do
     if port_in_use "${p}"; then
       if port_is_ours "${p}"; then ok "Port ${p} in use by this Playground"
-      else bad "Port ${p} is already in use by another process."; hint "Free it (lsof -nP -iTCP:${p} -sTCP:LISTEN shows the owner)."; fails=$((fails + 1)); fi
+      else bad "Port ${p} is already in use by another process."; hint "Find the owner with: lsof -nP -iTCP:${p} -sTCP:LISTEN (add sudo for other users' processes), then stop it."; fails=$((fails + 1)); fi
     else ok "Port ${p} available"; fi
   done
 
   # 9. git (only needed to fetch updates)
   if have git; then ok "Git: $(git --version | sed 's/git version //')"; else warn "Git not found (only needed to update the repository)."; warns=$((warns + 1)); fi
+
+  # 10. OpenShift Local (CRC): detection only (optional, never blocking, never started or queried beyond its version)
+  if have crc; then
+    ver="$(crc version 2>/dev/null | sed -n 's/^CRC version:[[:space:]]*//p' | head -1)"; ver="${ver%%+*}"
+    info "OpenShift Local (CRC): installed${ver:+ (${ver})}"
+  else
+    info "OpenShift Local (CRC): not installed"
+  fi
+
+  # 11. k3d: optional second internal provider, provided by the Playground image (never needed on the host, never blocking)
+  if container_running && docker exec "${CONTAINER}" k3d version >/dev/null 2>&1; then info "k3d (provider.name k3d): available in the Playground image"
+  else info "k3d (provider.name k3d): not in the running Playground image; optional, rebuild it with ./playground install to use it"; fi
 
   say
   if [ "${fails}" -gt 0 ]; then say "${fails} blocking problem(s). Fix them and run ./playground doctor again."; return 1; fi
@@ -263,12 +293,29 @@ cmd_install() {
   say "Next: ./playground start"
 }
 
+# Host-side CPU/RAM sampler for the resource bar (engine/host-metrics.sh): the container cannot see the real host. One instance (pid file),
+# started with the Playground, stopped with it; it also exits by itself when the container is not running.
+HOST_METRICS_PID="${ROOT}/.host-metrics.pid"
+host_metrics_stop() {
+  local pid; pid="$(cat "${HOST_METRICS_PID}" 2>/dev/null)"
+  [ -z "${pid}" ] || ps -p "${pid}" -o command= 2>/dev/null | grep -q host-metrics.sh && kill "${pid}" 2>/dev/null
+  rm -f "${HOST_METRICS_PID}"
+  return 0
+}
+host_metrics_start() {
+  host_metrics_stop
+  [ -z "${PLAYGROUND_NO_HOST_METRICS:-}" ] || return 0   # tests use a fake docker: no background process
+  nohup bash "${ROOT}/engine/host-metrics.sh" "${CONTAINER}" >/dev/null 2>&1 < /dev/null &
+  echo $! > "${HOST_METRICS_PID}"
+}
+
 cmd_start() {
   banner
   need_docker || return 1
   if in_container; then err "start runs on the host."; return 2; fi
   dc up -d || { err "docker compose up failed."; return 1; }
   ok "Playground started"
+  host_metrics_start
   if wait_web; then
     ok "Web UI ready"
     say "Open: ${URL}"
@@ -283,9 +330,10 @@ cmd_stop() {
   need_docker || return 1
   dc --profile ai-builder stop || { err "docker compose stop failed."; return 1; }
   ok "Playground stopped"
+  host_metrics_stop
   local n
   n="$(owned_clusters | wc -l | tr -d ' ')"
-  say "Kind clusters are independent Docker containers and keep running (${n} found)."
+  say "Kind and k3d clusters are independent Docker containers and keep running (${n} found)."
   say "Stop a use case before stopping the Playground to delete its clusters, or run ./playground purge."
   say "Open terminals (one Bash each) end with the container; the clusters and volumes are kept."
 }
@@ -304,6 +352,7 @@ cmd_restart() {
   fi
   dc restart || { err "docker compose restart failed."; return 1; }
   ok "Playground restarted (Kind clusters untouched)"
+  host_metrics_start
   if wait_web; then ok "Web UI ready"; say "Open: ${URL}"; else err "The Web UI did not answer in time."; return 1; fi
 }
 
@@ -323,9 +372,9 @@ cmd_status() {
   say "Web UI:         ${web}"
   nodes="$(owned_nodes)"
   if [ -z "${nodes}" ]; then
-    say "Kind clusters:  none"
+    say "Clusters:       none (Kind or k3d)"
   else
-    say "Kind clusters:"
+    say "Clusters (Kind or k3d):"
     printf '%s\n' "${nodes}" | awk '{n[$1]++; if ($2=="running") r[$1]++} END {for (c in n) printf "  %-48s %d/%d nodes running\n", c, r[c], n[c]}' | sort
     say "Use cases:      $(owned_clusters | sed -E "s/^${PREFIX}-(.*)-[0-9]+$/\1/" | sort -u | tr '\n' ' ')"
   fi
@@ -344,9 +393,10 @@ cmd_uninstall() {
   [ "${yes}" -eq 1 ] || confirm "Uninstall the Playground?" || return 1
   dc --profile ai-builder down --rmi local || { err "docker compose down failed."; return 1; }
   ok "Playground containers and image removed"
+  host_metrics_stop
   say
   say "Still present:"
-  say "  - Kind clusters: $(owned_clusters | tr '\n' ' ')"
+  say "  - Kind and k3d clusters: $(owned_clusters | tr '\n' ' ')"
   say "  - Docker volumes: $(docker volume ls -q --filter "label=com.docker.compose.project=${PROJECT}" | tr '\n' ' ')"
   say "  - The repository at ${ROOT}"
   say "Run ./playground purge --dry-run to see what a full cleanup would remove."
@@ -359,16 +409,16 @@ cmd_purge() {
   need_docker || return 1
   clusters="$(owned_clusters)"
   vols="$(docker volume ls -q --filter "label=com.docker.compose.project=${PROJECT}")"
-  say "Resources owned by the Playground (established by Kind's cluster label + the '${PREFIX}-<usecase>-<n>' name,"
+  say "Resources owned by the Playground (established by the Kind or k3d cluster label + the '${PREFIX}-<usecase>-<n>' name,"
   say "and by the Docker Compose project label '${PROJECT}'):"
   say
-  say "  Kind clusters (all their nodes and the data inside):"
+  say "  Kind and k3d clusters (all their nodes and the data inside):"
   if [ -n "${clusters}" ]; then printf '%s\n' "${clusters}" | sed 's/^/    - /'; else say "    (none)"; fi
   say "  Playground container: $(container_exists && echo "${CONTAINER}" || echo '(none)') (plus its Compose network and image)"
   say "  Docker volumes (kubeconfig, terminal state, shell history):"
   if [ -n "${vols}" ]; then printf '%s\n' "${vols}" | sed 's/^/    - /'; else say "    (none)"; fi
   say
-  say "Never touched: other containers and clusters, the shared 'kind' network, unrelated volumes and images,"
+  say "Never touched: other containers and clusters, the shared 'kind' and 'k3d-playground' networks, unrelated volumes and images,"
   say "the repository and your files. No 'docker system prune' or 'docker volume prune' is ever run."
   say
   if [ "${dry}" -eq 1 ]; then say "Dry run: nothing was deleted."; return 0; fi
@@ -378,10 +428,14 @@ cmd_purge() {
     [ "${answer}" = "purge" ] || { say "Cancelled."; return 1; }
   fi
   for name in ${clusters}; do
-    ids="$(docker ps -a -q --filter "label=${KIND_LABEL}=${name}")"
-    if [ -n "${ids}" ] && docker rm -f -v ${ids} >/dev/null 2>&1; then ok "Deleted cluster ${name}"
+    # The name already matched ^<prefix>-<usecase>-<n> and carries a Kind or k3d label (owned_clusters): only that cluster's containers go.
+    ids="$(docker ps -a -q --filter "label=${KIND_LABEL}=${name}"; docker ps -a -q --filter "label=${K3D_LABEL}=${name}")"
+    if [ -n "${ids}" ] && docker rm -f -v ${ids} >/dev/null 2>&1; then
+      docker volume rm $(docker volume ls -q --filter "label=${K3D_LABEL}=${name}") >/dev/null 2>&1 || true   # k3d's image volume of that cluster
+      ok "Deleted cluster ${name}"
     else bad "Could not delete cluster ${name}"; failures=$((failures + 1)); fi
   done
+  host_metrics_stop
   if dc --profile ai-builder down -v --rmi local >/dev/null 2>&1; then ok "Removed the Playground container, network, volumes and image"
   else bad "docker compose down -v failed (some Playground resources may remain)"; failures=$((failures + 1)); fi
   say
@@ -407,7 +461,7 @@ run_usecase_script() {   # run_usecase_script <name> <start|stop|status>: the en
 
 container_infra() {
   local sub="${1:-}"; [ $# -gt 0 ] && shift
-  local workers="" names=() k="${ROOT}/engine/infrastructure/kind"
+  local workers="" names=() run="${ROOT}/engine/infra-run.sh"
   unset KUBECONFIG    # lifecycle commands always use the shared kubeconfig, like the Web UI backend
   case "${sub}" in
     up)
@@ -420,11 +474,11 @@ container_infra() {
       done
       require_names "infra up" ${names[@]+"${names[@]}"} || return 1
       [ -z "${workers}" ] || export WORKERS="${workers}"
-      bash "${k}/up.sh" "${names[@]}" ;;
-    platform-up) require_names "infra platform-up" "$@" || return 1; bash "${k}/platform-up.sh" "$@" ;;
-    down)        require_names "infra down" "$@" || return 1; bash "${k}/down.sh" "$@" ;;
-    info)        bash "${k}/info.sh" "$@" ;;
-    status)      bash "${k}/status.sh" "$@" ;;
+      bash "${run}" up "${names[@]}" ;;
+    platform-up) require_names "infra platform-up" "$@" || return 1; bash "${run}" platform-up "$@" ;;
+    down)        require_names "infra down" "$@" || return 1; bash "${run}" down "$@" ;;
+    info)        bash "${run}" info "$@" ;;
+    status)      bash "${run}" status "$@" ;;
     ""|-h|--help|help) say "Usage: ./playground infra {up|platform-up|down|info|status} [CLUSTER...]"; [ -n "${sub}" ] ;;
     *) err "Unknown infra command '${sub}'. Try: up, platform-up, down, info, status."; return 2 ;;
   esac
@@ -464,6 +518,29 @@ container_usecase() {
   esac
 }
 
+# A value of the provider section of usecases/<name>/usecase.yaml (type | context); empty when absent.
+manifest_provider_value() {   # <name> <key>
+  awk -v k="$2" '/^provider:[ ]*$/ { s = 1; next } /^[^ \t#]/ { s = 0 } s && $1 == k ":" { v = $2; gsub(/["\047]/, "", v); print v; exit }' "${ROOT}/usecases/$1/usecase.yaml" 2>/dev/null
+}
+
+# External provider, host side of `usecase start`: copy ONLY the configured context (with its credentials, resolved through KUBECONFIG
+# like kubectl does) from the host kubeconfig into the container, which checks it (engine/providers/external/import.sh). The host
+# kubeconfig is only read; nothing is printed.
+external_import() {   # <name>
+  local name="$1" ctx tool=""
+  [ "$(manifest_provider_value "${name}" type)" = external ] || return 0
+  ctx="$(manifest_provider_value "${name}" context)"
+  [ -n "${ctx}" ] || { err "usecases/${name}/usecase.yaml: provider type external needs provider.context"; return 1; }
+  need_docker || return 1
+  container_running || { err "The Playground is not running. Start it first: ./playground start"; return 3; }
+  if have kubectl; then tool=kubectl; elif have oc; then tool=oc; fi
+  [ -n "${tool}" ] || { err "kubectl or oc is needed on the host to read the context '${ctx}' from your kubeconfig."; return 1; }
+  "${tool}" config view --minify --flatten --raw --context "${ctx}" 2>/dev/null | grep -q . ||
+    { err "Context '${ctx}' not found in your kubeconfig (KUBECONFIG=${KUBECONFIG:-~/.kube/config})."; return 1; }
+  "${tool}" config view --minify --flatten --raw --context "${ctx}" 2>/dev/null |
+    docker exec -i "${CONTAINER}" bash /workspace/engine/providers/external/import.sh "${name}" || return 1
+}
+
 # Host side: run the same command inside the running container (interactive only when attached to a terminal).
 route_to_container() {
   need_docker || return 1
@@ -478,7 +555,7 @@ route_to_container() {
 }
 
 # =============================================================================================================
-# AI Builder (docs/ai-builder.md). Container mode (default): compose service "ai-builder" with Claude Code inside.
+# AI Builder. Container mode (default): compose service "ai-builder" with Claude Code inside.
 # Host mode (`ai-builder host ...`, temporary fallback): ai-builder/server.py on the host, using the host's claude.
 # =============================================================================================================
 AIB_PORT="${AI_BUILDER_PORT:-8099}"
@@ -621,7 +698,11 @@ main() {
       cmd_ai_builder "$@" ;;
     infra|usecase)
       case "${1:-}" in ""|-h|--help|help) "container_${cmd}" "$@"; return ;; esac   # usage needs no container
-      if in_container; then "container_${cmd}" "$@"; else route_to_container "${cmd}" "$@"; fi ;;
+      if in_container; then "container_${cmd}" "$@"
+      else
+        if [ "${cmd}" = usecase ] && [ "${1:-}" = start ] && [ -n "${2:-}" ]; then external_import "$2" || return $?; fi
+        route_to_container "${cmd}" "$@"
+      fi ;;
     *) err "Unknown command '${cmd}'."; say "Run ./playground --help" >&2; return 2 ;;
   esac
 }

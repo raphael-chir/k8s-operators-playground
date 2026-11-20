@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# One terminal = one Bash process (SPEC-007.1.7). ttyd runs this script for every browser connection; there is
+# One terminal = one Bash process. ttyd runs this script for every browser connection; there is
 # no session manager: opening, refreshing or closing a terminal starts or ends its Bash, nothing else.
 #   terminal.sh [usecase [panel]]
 # No use case = the Playground terminal (starts in /usecases); a use case terminal starts in
 # /usecases/<name> (where its scenarios are) and is valid only for a use case reported by
-# engine/usecase-list.sh. ttyd passes the page's ?arg=<usecase> as the first argument. Split view (SPEC-009): an
+# engine/usecase-list.sh. ttyd passes the page's ?arg=<usecase> as the first argument. Split view: an
 # additional panel of a use case tab passes its number (2-4) as the second argument; it has its own kubeconfig file
 # and always starts on the use case's context. Panel 1 is the tab's primary terminal, exactly as before.
 set -Eeuo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KUBE_TERMINALS_DIR="${KUBE_TERMINALS_DIR:-${HOME}/.kube/terminals}"
-source "${PROJECT_ROOT}/engine/infrastructure/kind/common.sh"   # cluster_name / cluster_context (Kind naming)
+source "${PROJECT_ROOT}/engine/lib/usecase-manifest.sh"
 
 fail() { echo "terminal: $*" >&2; exit 1; }
 
-# A container created before SPEC-007.1.7 still runs ttyd with the former `attach` argument: ignore it.
+# A container created before the session manager was removed still runs ttyd with the former `attach` argument: ignore it.
 [ "${1:-}" != attach ] || shift
 usecase="${1:-}"
 panel="${2:-}"
@@ -33,17 +33,20 @@ else
   # Captured first: grep -q closing the pipe early would make the lister fail under pipefail.
   names="$(bash "${PROJECT_ROOT}/engine/usecase-list.sh" --names)" || fail "use case discovery failed"
   grep -Fxq -- "${usecase}" <<< "${names}" || fail "unknown use case '${usecase}'"
+  [ -n "${PLAYGROUND_PROVIDER:-}" ] || PLAYGROUND_PROVIDER="$(usecase_provider "${usecase}")"
   session="playground-uc-${usecase}"
   dir="${usecases_dir}/${usecase}"
   [ -z "${panel}" ] || session="${session}-p${panel}"
 fi
+
+source "${PROJECT_ROOT}/engine/lib/provider.sh"   # provider_cluster_name / provider_context (of the use case's provider)
 
 # Context a new terminal starts with: a use case terminal selects cluster 1 of its use case (derived from the Kind
 # naming helpers, whether or not that cluster exists yet); Playground selects the shared default context.
 initial_context() {
   local context known
   if [ -n "${usecase}" ]; then
-    cluster_context "$(cluster_name "${usecase}" 1)"
+    provider_context "$(provider_cluster_name "${usecase}" 1)"
   else
     # Playground: the shared default, but never a context that does not exist (it does not depend on any cluster).
     context="$(env -u KUBECONFIG kubectl config current-context 2>/dev/null || true)"

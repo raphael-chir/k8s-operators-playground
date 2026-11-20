@@ -2,7 +2,7 @@
 
 ## Setup
 
-Install Docker with Compose v2 (see [docs/installation.md](docs/installation.md)), then:
+Install Docker with Compose v2, then:
 
 ```bash
 ./playground doctor && ./playground install && ./playground start
@@ -15,14 +15,14 @@ The repository is bind-mounted into the container at `/workspace`, so edits to s
 1. Create a branch, make a small focused change.
 2. Run `tests/static.sh`, `tests/cli.sh`, `tests/engine.sh`, `tests/terminal.sh` and, if you touch a use case's scenarios or the platform charts, `tests/monitoring.sh` (`tests/scenarios.sh` currently targets an earlier scenario layout and is being reworked with the scenarios).
 3. Exercise what you changed (API calls, a throwaway use case, the scenario you touched). Never test destructive commands against your own environment: use `tests/cli.sh`.
-4. Update the documentation and add or update the specification in `docs/specs/` (see below).
+4. Update the documentation (see below).
 5. Open a pull request.
 
 ## Conventions
 
 - Bash: `set -Eeuo pipefail` in engine scripts; host-side code in `playground` stays Bash 3.2 compatible (no `mapfile`, no associative arrays). Quote variables; no `eval` of user input.
 - No GNU Make. No new dependency on the host: everything runs in the container.
-- No hard-coded use case names, cluster names or ports (see [CLAUDE.md](CLAUDE.md)).
+- No hard-coded use case names, cluster names or ports.
 - Frontend: vanilla JS, DOM built with `textContent`; colors through the CSS variables of both themes.
 - Comments explain *why*; keep them accurate when behavior changes.
 
@@ -41,13 +41,13 @@ Use case: kebab-case (`cnpg-standard`). Kind cluster `cnpg-lab-<usecase>-<n>`; c
 
 `tests/static.sh` (syntax of Bash/Python/JS, Compose config, help and version consistency, documentation links, no Make), `tests/cli.sh` (the CLI against a fake `docker`, covering the destructive commands) and `tests/engine.sh` (project-root resolution from any working directory, plus read-only checks of the real use case scripts when the Playground runs). `tests/scenarios.sh` runs the `cnpg-standard` scenarios against a fake `kubectl` (paths, flow, UI, context isolation; nothing is sent to a cluster). New CLI behavior needs a case in `tests/cli.sh`.
 
-## Documentation and specifications
+## Documentation
 
-Update `docs/` with the change. For a new feature or a significant fix, add `docs/specs/SPEC-<id>-<name>.md` (the request preserved verbatim, what was implemented, limitations, verification) and a row in `docs/specs/README.md`. State what was actually verified; do not claim browser or platform tests that did not run.
+Update `README.md` when a user-visible command or step changes. State what was actually verified; do not claim browser or platform tests that did not run.
 
 ## Pull requests
 
-Describe the change and its verification, list the docs and specs updated, and mention anything not tested (browser, other platforms). Keep PRs small. Do not include unrelated reformatting.
+Describe the change and its verification, list the docs updated, and mention anything not tested (browser, other platforms). Keep PRs small. Do not include unrelated reformatting.
 
 ## Security and secrets
 

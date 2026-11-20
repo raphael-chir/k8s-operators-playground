@@ -1,4 +1,4 @@
-/* AI Lab Assistant: a panel docked on the right of the Playground (SPEC-024). Loaded after style.css as its OWN file; every
+/* AI Lab Assistant: a panel docked on the right of the Playground. Loaded after style.css as its OWN file; every
    selector starts with #aib (or is an .aib-* class used only inside it), so nothing here can change the rest of the page, except
    the layout hooks of the panel itself (the header button, the resizer, and main.aib-open / main.aib-dragging).
    Colors, borders and fonts come from the variables of style.css (light and dark). Rules that set `display` on an element that
@@ -251,7 +251,7 @@ main.aib-dragging #panes iframe { pointer-events: none; }        /* a terminal n
   #aib .aib-spinner { animation-duration: 2.4s; }
 }
 
-/* --- calm minimalist refinement (SPEC-024 follow-up): quieter header, spacious reading, softer Markdown --- */
+/* --- calm minimalist refinement: quieter header, spacious reading, softer Markdown --- */
 #aib .aib-head { padding: 4px 8px 4px 12px; gap: 8px; border-bottom-color: color-mix(in srgb, var(--border) 60%, transparent); }
 #aib .aib-head h3 { font-size: 12.5px; font-weight: 600; }
 #aib .aib-badge.ok { font-size: 0; width: 8px; height: 8px; max-width: none; padding: 0; background: var(--ok); border: 0; }

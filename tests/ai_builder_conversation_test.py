@@ -1,4 +1,4 @@
-"""Tests of the AI Lab Assistant conversations (SPEC-022). A scripted runner stands in for the Claude Code CLI: no real
+"""Tests of the AI Lab Assistant conversations. A scripted runner stands in for the Claude Code CLI: no real
 Claude call, no Docker, Kubernetes or Helm. Run: tests/ai-builder.sh"""
 import json
 import shutil

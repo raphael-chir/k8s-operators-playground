@@ -6,7 +6,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../engine/lib/ui.sh"
 source "${SCRIPT_DIR}/../../engine/usecase.sh"
 
-CLUSTER="kind-cnpg-lab-cnpg-edb-plugin-1"
 MANIFEST="${SCRIPT_DIR}/manifests/cluster-tde.yaml"
 
 show_instruct() {
@@ -41,7 +40,7 @@ TDE enabled and WAL archiving configured.
 
 play() {
   ui_info "Select Kubernetes context"
-  ui_command "kubectl config use-context ${CLUSTER}"
+  ui_command "kubectl config use-context ${KUBE_CONTEXT}"
   ui_pause
 
   ui_info "Create MinIO credentials"

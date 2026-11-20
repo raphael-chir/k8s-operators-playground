@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Web terminal without a session manager (SPEC-007.1.7).
+# Web terminal without a session manager.
 #  A. static: tmux is gone from every executable path; ttyd keeps >= 10000 lines of scrollback and no Option workaround.
 #  B. engine/terminal.sh in a throwaway container from the Playground image (no Docker socket, no published port,
 #     removed afterwards; skipped without Docker or the image): own kubeconfig file, working directory, UTF-8, validation.
@@ -44,7 +44,7 @@ if command -v docker >/dev/null 2>&1 && [ -n "${IMG}" ] && docker image inspect 
   nav='cd ..; echo "UP1=$PWD"; cd ..; echo "UP2=$PWD"; cd /workspace; echo "WS=$PWD"; exit'
   out="$(echo "${nav}" | runl cnpg-standard)"
   grep -q 'UP1=/usecases$' <<< "${out}" && grep -q 'UP2=/$' <<< "${out}" && grep -q 'WS=/workspace$' <<< "${out}" && r=ok || r=bad; check "logical navigation: cd .. gives /usecases then /, and /workspace still works" "$r" "${out}"
-  # Split view (SPEC-009): a panel has its own file, starts on the use case context, never inherits another's.
+  # Split view: a panel has its own file, starts on the use case context, never inherits another's.
   out="$(echo "${show}" | run cnpg-standard 3)"
   { grep -q 'FILE=/root/.kube/terminals/playground-uc-cnpg-standard-p3.yaml' <<< "${out}" && grep -q '^current-context: kind-cnpg-lab-cnpg-standard-1$' <<< "${out}"; } && r=ok || r=bad; check "split panel: own kubeconfig file, use case context" "$r" "${out}"
   seed='mkdir -p /root/.kube/terminals; printf "apiVersion: v1\nkind: Config\ncurrent-context: other\n" > /root/.kube/terminals/playground-uc-cnpg-standard-p2.yaml; exec bash /workspace/engine/terminal.sh cnpg-standard 2'

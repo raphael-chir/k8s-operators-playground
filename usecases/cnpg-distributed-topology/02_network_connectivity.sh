@@ -11,39 +11,39 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../engine/lib/ui.sh"
 source "${SCRIPT_DIR}/../../engine/usecase.sh"
 
-CLUSTER_1="kind-cnpg-lab-cnpg-distributed-topology-1"
-CLUSTER_2="kind-cnpg-lab-cnpg-distributed-topology-2"
+CLUSTER_1="$(usecase_context 1)"
+CLUSTER_2="$(usecase_context 2)"
 
-NODE_1="cnpg-lab-cnpg-distributed-topology-1-control-plane"
-NODE_2="cnpg-lab-cnpg-distributed-topology-2-control-plane"
+NAME_1="$(provider_cluster_name "${USECASE}" 1)"
+NAME_2="$(provider_cluster_name "${USECASE}" 2)"
 
 show_instruct() {
   ui_note "
 # 02 / Inter-Cluster Network Connectivity
 
 Explore and validate network connectivity between two independent
-Kubernetes clusters running on the same Docker network.
+Kubernetes clusters of the same environment.
 
 ## Architecture
 - Kubernetes Cluster 1: Primary site
 - Kubernetes Cluster 2: Disaster Recovery site
-- Shared Docker network: kind
+- Both clusters reachable from each other (provider network)
 - PostgreSQL replication: TCP 5432
 
 ## What you will learn
 - Understand networking between independent Kubernetes clusters
-- Discover Docker networks and Kind node addresses
-- Validate bidirectional TCP connectivity
+- Discover the address each cluster is reached on
+- Validate bidirectional Kubernetes API connectivity
 - Understand ClusterIP and NodePort services
 - Prepare networking for PostgreSQL streaming replication
 
 ## Prerequisites
-- Two Kind clusters running
-- Both clusters connected to the Docker network kind
-- Docker and kubectl available
+- Two Kubernetes clusters running
+- Both clusters reachable from each other
+- kubectl available
 
 ## Expected outcome
-Both Kubernetes clusters can communicate over the Docker network.
+Both Kubernetes clusters can communicate with each other.
 
 PostgreSQL services will be exposed and tested in the next scenarios.
 "
@@ -52,40 +52,19 @@ PostgreSQL services will be exposed and tested in the next scenarios.
 
 play() {
 
-  ui_info "List Docker networks"
-  ui_command "docker network ls"
+  ADDR_1="$(usecase_cluster_address 1)"
+  ADDR_2="$(usecase_cluster_address 2)"
+
+  ui_info "Identify the address other clusters use to reach Cluster 1"
+  ui_command "echo ${ADDR_1}"
   ui_pause
 
-  ui_info "Identify Kind containers and their Docker networks"
-  ui_command "docker ps --format 'table {{.Names}}\t{{.Networks}}'"
+  ui_info "Identify the address other clusters use to reach Cluster 2"
+  ui_command "echo ${ADDR_2}"
   ui_pause
 
-  ui_info "Inspect the shared Kind Docker network"
-  ui_command "docker network inspect kind --format '{{range .Containers}}{{println .Name .IPv4Address}}{{end}}'"
-  ui_pause
-
-  ui_info "Identify Cluster 1 control-plane IP address"
-  ui_command "docker inspect -f '{{.NetworkSettings.Networks.kind.IPAddress}}' ${NODE_1}"
-  ui_pause
-
-  ui_info "Identify Cluster 2 control-plane IP address"
-  ui_command "docker inspect -f '{{.NetworkSettings.Networks.kind.IPAddress}}' ${NODE_2}"
-  ui_pause
-
-  ui_info "Check Kubernetes API listening ports on Cluster 1"
-  ui_command "docker exec ${NODE_1} ss -lnt"
-  ui_pause
-
-  ui_info "Check Kubernetes API listening ports on Cluster 2"
-  ui_command "docker exec ${NODE_2} ss -lnt"
-  ui_pause
-
-  ui_info "Verify TCP connectivity from Cluster 1 to Cluster 2 (Kubernetes API)"
-  ui_command "docker exec ${NODE_1} bash -c 'timeout 3 bash -c \"echo > /dev/tcp/${NODE_2}/6443\" && echo TCP_OK'"
-  ui_pause
-
-  ui_info "Verify TCP connectivity from Cluster 2 to Cluster 1 (Kubernetes API)"
-  ui_command "docker exec ${NODE_2} bash -c 'timeout 3 bash -c \"echo > /dev/tcp/${NODE_1}/6443\" && echo TCP_OK'"
+  ui_info "Verify that each Kubernetes API answers from the other cluster (both directions)"
+  ui_command "provider_validate_connectivity ${NAME_1} ${NAME_2}"
   ui_pause
 
   ui_info "Select Kubernetes Cluster 1"
@@ -135,7 +114,7 @@ Planned configuration:
 - Cluster 1: Primary PostgreSQL endpoint
 - Cluster 2: Replica PostgreSQL endpoint
 
-Both clusters share the Docker network kind.
+Both clusters can reach each other (checked above).
 
 The PostgreSQL NodePort services will be created during the
 PostgreSQL deployment scenarios.

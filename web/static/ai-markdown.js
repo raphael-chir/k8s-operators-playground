@@ -1,4 +1,4 @@
-// Markdown rendering and syntax highlighting for the AI Lab Assistant panel (SPEC-024). No library.
+// Markdown rendering and syntax highlighting for the AI Lab Assistant panel. No library.
 // Everything is built with createElement / textContent: a reply from Claude is never parsed as markup, links are limited to
 // http(s) and mailto, and nothing here runs a script. Pure functions (parse, tokens) are unit-tested with Node
 // (tests/ai_builder_ui_test.js); render() only needs an object with createElement.

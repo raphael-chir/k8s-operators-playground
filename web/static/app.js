@@ -26,7 +26,7 @@ const panes = document.getElementById("panes");
 const splitBtn = document.getElementById("split");
 splitBtn.onclick = splitActive;
 const frames = new Map();            // tab id -> pane (grid of one to four terminal cells)
-const MAX_PANELS = 4;                // split view (SPEC-009): panel 1 is the tab's own terminal, 2-4 are splits
+const MAX_PANELS = 4;                // split view: panel 1 is the tab's own terminal, 2-4 are splits
 let terminals = [{ id: "main", title: "Playground", usecase: null }];
 let activeTab = "main";
 let tabsSignature = "";
@@ -234,11 +234,40 @@ async function api(method, path, body) {
   return data;
 }
 
-function render() {
-  opViews.clear();
-  if (highlighted && !items.some(u => u.name === highlighted)) highlighted = null;
-  const selected = highlighted;
-  list.replaceChildren(...items.map(u => {
+// Provider logos, keyed by provider.name from usecase.yaml (never inferred from the use case name or provider.type). Add a provider here.
+const PROVIDER_ICONS = { kind: "icons/kind.svg", k3d: "icons/k3d.svg", openshift: "icons/openshift.svg" };
+const DEFAULT_PROVIDER_ICON = "icons/kubernetes.svg";
+function providerIcon(u) {
+  const pname = u.provider && u.provider.name;
+  const img = document.createElement("img");
+  img.className = "uc-provider";
+  img.src = PROVIDER_ICONS[pname] || DEFAULT_PROVIDER_ICON;
+  img.alt = ""; img.title = pname || "kubernetes";
+  return img;
+}
+
+// Sidebar groups: Running first, then Available; an instant case-insensitive filter; each group collapses (kept in memory).
+const searchBox = document.getElementById("uc-search");
+const groupCollapsed = { running: false, available: false };
+const matches = u => {
+  const q = searchBox.value.trim().toLowerCase();
+  return !q || [u.name, u.title, u.description, u.provider && u.provider.name].some(t => (t || "").toLowerCase().includes(q));
+};
+function ucGroup(key, label, members, selected) {
+  const head = document.createElement("li");
+  head.className = "uc-section" + (groupCollapsed[key] ? " collapsed" : "");
+  head.setAttribute("role", "button");
+  head.tabIndex = 0;
+  head.setAttribute("aria-expanded", String(!groupCollapsed[key]));
+  head.textContent = `${label} (${members.length})`;
+  const toggle = () => { groupCollapsed[key] = !groupCollapsed[key]; render(); };
+  head.onclick = toggle;
+  head.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } };
+  return [head, ...(groupCollapsed[key] ? [] : members.map(u => ucItem(u, selected)))];
+}
+searchBox.oninput = () => render();
+
+function ucItem(u, selected) {
     const op = u.operation;
     const li = document.createElement("li");
     li.className = u.status + (u.name === selected ? " selected" : "");
@@ -248,7 +277,7 @@ function render() {
     row.className = "uc-row";
     const name = document.createElement("div");
     name.className = "uc-name";
-    name.append(document.createElement("i"), u.title || u.name);
+    name.append(providerIcon(u), u.title || u.name);
     if (u.description) li.title = u.description;
     const button = document.createElement("button");
     button.type = "button";
@@ -280,9 +309,18 @@ function render() {
       line.append(label, " · ", link);
       li.append(line);
     }
-    return li;
-  }));
+  return li;
+}
+
+function render() {
+  opViews.clear();
+  if (highlighted && !items.some(u => u.name === highlighted)) highlighted = null;
+  const selected = highlighted;
+  const shown = items.filter(matches);
+  const running = shown.filter(u => u.status === "running"), available = shown.filter(u => u.status !== "running");
+  list.replaceChildren(...ucGroup("running", "Running", running, selected), ...ucGroup("available", "Available", available, selected));
   if (!items.length) list.innerHTML = '<li class="muted">No use case found</li>';
+  else if (!shown.length) list.append(Object.assign(document.createElement("li"), { className: "muted", textContent: "No match" }));
 }
 
 // --- Start timer. The backend stamps each operation (server clock) and reports `elapsed` / `since_finished` with
@@ -544,27 +582,49 @@ function ageText() {
   const secs = Math.max(0, Math.round(resData.age_seconds + (Date.now() - resFetchedAt) / 1000));
   return secs + "s ago";
 }
+// Utilisation level of a 0..1 fraction: ok (< 70%), warn (70-85%), crit (> 85%). Colors the percentage and the bar.
+const resLevel = f => f > 0.85 ? "crit" : f >= 0.70 ? "warn" : "ok";
+function usageItem(label, fraction, tip) {          // fraction null = not available
+  const item = sbEl("span", "res-item lvl-" + (fraction === null ? "na" : resLevel(fraction)));
+  item.title = tip;
+  const pct = fraction === null ? "N/A" : (fraction * 100 < 10 ? (fraction * 100).toFixed(1) : String(Math.round(fraction * 100))) + "%";
+  item.append(sbEl("span", "res-lbl", label), sbEl("b", "res-pct", pct));
+  if (fraction !== null) {
+    const bar = sbEl("span", "res-bar"), fill = sbEl("i", "");
+    fill.style.width = Math.min(100, Math.max(0, fraction * 100)).toFixed(0) + "%";
+    bar.append(fill); item.append(bar);
+  }
+  return item;
+}
+const countItem = (label, value, tip, unit) => { const i = sbEl("span", "res-item"); i.title = tip; i.append(...(label ? [sbEl("span", "res-lbl", label)] : []), sbEl("b", "", value), ...(unit ? [sbEl("span", "res-lbl", unit)] : [])); return i; };
 function renderResources() {
-  const parts = [sbEl("span", "res-title", "Docker resources")];
-  const d = resData;
+  const d = resData, secs = [];
+  // Section icons (local SVGs, tinted with the mask technique) instead of names; the host icon follows the real host OS.
+  const OS_ICONS = { macos: ["os-apple.svg", "macOS"], windows: ["os-windows.svg", "Windows"], linux: ["os-linux.svg", "Linux"] };
+  const icon = (file, tip, color) => { const i = sbEl("span", "res-icon"); i.title = tip; i.style.setProperty("--icon", `url("icons/${file}")`); if (color) i.style.setProperty("--tint", color); return i; };
+  const section = (ic, ...items) => { const s = sbEl("span", "res-sec"); s.append(ic, ...items); secs.push(s); };
+  // HOST: the machine itself (host-side sampler); N/A without a fresh sample, never a container figure
+  const h = d && d.host;
+  const [osFile, osName] = (h && OS_ICONS[h.os]) || ["computer.svg", h ? "Host (OS unknown)" : "Host (no host metrics)"];
+  section(icon(osFile, "Host: " + osName),
+    usageItem("CPU", h ? h.cpu_percent / 100 : null, h ? `Host CPU: ${h.cpu_percent.toFixed(1)}% of ${h.cpus} logical CPUs` : "Host metrics are not available (no host-side sampler running)"),
+    usageItem("RAM", h ? h.mem_used_bytes / h.mem_total_bytes : null, h ? `Host RAM: ${fmtBytes(h.mem_used_bytes)} used of ${fmtBytes(h.mem_total_bytes)}` : "Host metrics are not available (no host-side sampler running)"));
   if (d && d.engine && d.playground) {
     const e = d.engine, p = d.playground, cores = p.cpu_percent / 100;   // Docker: 100% = one logical CPU
-    const capacity = e.cpus > 0 ? (cores / e.cpus) * 100 : null;         // share of the Engine's total CPU capacity
-    const pct = capacity === null ? null : capacity < 10 ? capacity.toFixed(1) : Math.round(capacity);
-    parts.push(
-      resItem("CPU", capacity === null ? `${cores.toFixed(2)} cores` : `${pct}%`,
-        "Percentage of total Docker Engine CPU capacity" + (capacity === null ? " (CPU count unknown)" : `\n(Docker's raw figure: ${p.cpu_percent}% of one CPU)`), capacity === null ? undefined : capacity / 100),
-      ...(capacity === null ? [] : [sbEl("span", "", `${cores.toFixed(2)} / ${e.cpus} cores`)]),
-      resItem("RAM", `${fmtBytes(p.memory_used_bytes)} / ${fmtBytes(e.memory_total_bytes)}`, "Memory used by Playground Kind nodes\n(of the Docker Engine's total memory)", p.memory_used_bytes / e.memory_total_bytes),
-      resItem("Kind nodes", String(p.kind_containers_running), `Running Kind node containers of Playground clusters. Docker Engine: ${e.containers_running} running, ${e.containers_stopped} stopped`),
-      sbEl("span", "", `Docker: ${e.containers_running} running`),
-      resItem("Clusters", p.kind_clusters_running === p.kind_clusters_existing ? String(p.kind_clusters_running) : `${p.kind_clusters_running} of ${p.kind_clusters_existing}`, "Playground Kind clusters with all their nodes running" + (p.kind_clusters_running === p.kind_clusters_existing ? "" : " (some exist with stopped nodes)")));
+    section(icon("docker.svg", "Docker", "#2496ed"),
+      usageItem("CPU", e.cpus > 0 ? cores / e.cpus : null, `Docker CPU: ${cores.toFixed(2)} of ${e.cpus} cores allocated to the Docker Engine\n(Docker's raw figure: ${p.cpu_percent}% of one CPU)`),
+      usageItem("RAM", p.memory_used_bytes / e.memory_total_bytes, `Docker RAM: ${fmtBytes(p.memory_used_bytes)} used by the Playground's Kubernetes nodes of ${fmtBytes(e.memory_total_bytes)} allocated to the Docker Engine`),
+      countItem("", `${e.containers_running}`, `Docker containers: ${e.containers_running} running, ${e.containers_stopped} stopped`, "ctrs"));
+    section(icon("kubernetes.svg", "Kubernetes", "none"),
+      countItem("Nodes", String(p.kind_containers_running), `Running node containers of Playground clusters (Kind and k3d). Docker Engine: ${e.containers_running} running, ${e.containers_stopped} stopped`),
+      countItem("Clusters", p.kind_clusters_running === p.kind_clusters_existing ? String(p.kind_clusters_running) : `${p.kind_clusters_running} of ${p.kind_clusters_existing}`, "Playground clusters (Kind and k3d) with all their nodes running" + (p.kind_clusters_running === p.kind_clusters_existing ? "" : " (some exist with stopped nodes)")));
   } else {
-    parts.push(sbEl("span", "res-stale", "Docker unavailable" + (resFailure ? ": " + resFailure : "")));
+    section(icon("docker.svg", "Docker", "#2496ed"), sbEl("span", "res-stale", "Docker unavailable" + (resFailure ? ": " + resFailure : "")));
   }
-  resAgeEl = sbEl("span", (d && d.stale) || resFailure ? "res-stale" : "", d && d.engine ? "Updated " + ageText() : "No measurement yet");
+  resAgeEl = sbEl("span", (d && d.stale) || resFailure ? "res-stale res-age" : "res-age", d && d.engine ? "Updated " + ageText() : "No measurement yet");
+  const parts = [...secs];
+  if (d && d.stale && d.engine) parts.push(sbEl("span", "res-stale", "Docker unavailable, last values"));
   parts.push(resAgeEl);
-  if (d && d.stale && d.engine) parts.splice(1, 0, sbEl("span", "res-stale", "Docker unavailable, last values"));
   resBar.replaceChildren(...parts);
 }
 async function refreshResources() {

@@ -1,4 +1,4 @@
-"""ai-publisher: the only process allowed to write published Labs (SPEC-023). Standard library only. No Claude Code here.
+"""ai-publisher: the only process allowed to write published Labs. Standard library only. No Claude Code here.
 
 It runs in its own container (compose service `ai-publisher`): <state> is mounted READ-ONLY, usecases/ is the one writable
 mount, no port is published on the host, and it needs no login. The AI Builder (where Claude Code runs, with usecases/
@@ -10,7 +10,7 @@ read-only) asks it to publish; it does not trust the request:
     * its content hash must equal expected_hash (what the user approved), it is validated again, and a replacement is
       refused when the published Lab no longer hashes to base_hash (somebody changed it since the working copy was made);
     * the swap is atomic where the filesystem allows it (publishing.publish_tree).
-  POST /delete {"name", "expected_hash"}  (a whole Lab, SPEC-026): usecases/<name> is renamed into usecases/.trash/ if it is a real
+  POST /delete {"name", "expected_hash"}  (a whole Lab): usecases/<name> is renamed into usecases/.trash/ if it is a real
     directory whose content hash is expected_hash; nothing is removed.
   GET /health  liveness.
 

@@ -21,7 +21,7 @@ SNAPSHOT_SKIP_FILES = {".DS_Store"}
 
 # --- usecase.yaml: the small YAML subset the engine reads (two levels, scalars) --------------------------------
 def parse_usecase_yaml(text):
-    """Return (dict, errors). Same subset as engine/infrastructure/kind/common.sh: `key: value` and one nested level."""
+    """Return (dict, errors). Same subset as engine/lib/usecase-manifest.sh: `key: value` and one nested level."""
     data, errors, section = {}, [], None
     for n, raw in enumerate(text.splitlines(), 1):
         if not raw.strip() or raw.lstrip().startswith("#"):

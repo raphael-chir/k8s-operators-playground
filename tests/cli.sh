@@ -42,7 +42,7 @@ esac
 exit 0
 FAKE
 chmod +x "${T}/bin/docker"
-export FAKE_LOG="${LOG}" PATH="${T}/bin:${PATH}"
+export PLAYGROUND_NO_HOST_METRICS=1 FAKE_LOG="${LOG}" PATH="${T}/bin:${PATH}"
 cli() { PLAYGROUND_CONTEXT=host "${CLI}" "$@"; }
 
 # --- basics ---------------------------------------------------------------------------------------------------

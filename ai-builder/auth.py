@@ -1,4 +1,4 @@
-"""Claude Code sign-in from the browser, for the AI Builder container (docs/ai-builder.md, SPEC-020).
+"""Claude Code sign-in from the browser, for the AI Builder container.
 
 What the installed CLI offers (Claude Code 2.1.x): `claude auth login [--claudeai|--console|--sso] [--email E]` is an
 interactive terminal screen. It shows an official sign-in address and the prompt "Paste code here if prompted >";

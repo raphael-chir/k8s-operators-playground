@@ -18,9 +18,9 @@ export AI_BUILDER_STATE_DIR="${T}/state" PYTHONDONTWRITEBYTECODE=1
 python3 -I tests/ai_builder_test.py 2>&1 | tail -40; [ "${PIPESTATUS[0]}" = 0 ] || rc=1
 # Browser sign-in (ai-builder/auth.py) with a FAKE claude script in a PTY: no real login, logout or generation
 python3 -I -W error::ResourceWarning tests/ai_builder_auth_test.py 2>&1 | tail -8; [ "${PIPESTATUS[0]}" = 0 ] || rc=1
-# AI Lab Assistant conversations (SPEC-022): scripted runner, no Claude call
+# AI Lab Assistant conversations: scripted runner, no Claude call
 python3 -I -W error::ResourceWarning tests/ai_builder_conversation_test.py 2>&1 | tail -8; [ "${PIPESTATUS[0]}" = 0 ] || rc=1
-# Conversational Lab editing (SPEC-023): working copy, publisher service, permissions, review/undo/reset, conflicts, publication
+# Conversational Lab editing: working copy, publisher service, permissions, review/undo/reset, conflicts, publication
 python3 -I -W error::ResourceWarning tests/ai_builder_editing_test.py 2>&1 | tail -8; [ "${PIPESTATUS[0]}" = 0 ] || rc=1
 # Playground -> AI Builder proxy (web/ai_builder_proxy.py) against a fake upstream server on 127.0.0.1
 python3 -I -W error::ResourceWarning tests/ai_builder_proxy_test.py 2>&1 | tail -8; [ "${PIPESTATUS[0]}" = 0 ] || rc=1

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Non-destructive tests of the cnpg-standard scenarios (SPEC-007.1.3). No cluster, no Docker, no network:
+# Non-destructive tests of the cnpg-standard scenarios. No cluster, no Docker, no network:
 #  A. static: the six scenarios + reset, no helper library, manifests, images, context rule, no leftovers.
 #  B. each scenario run end to end with a FAKE kubectl/docker/sleep on PATH: the commands sent, the prompts, the
 #     upgrade patches, the reset scope and its failure path. This is NOT a runtime validation of the scenarios.
@@ -32,10 +32,10 @@ bad=""
 for m in "${UC}"/manifests/*.yaml; do
   if command -v yq >/dev/null 2>&1; then yq eval '.' "${m}" >/dev/null 2>&1 || bad="${bad} $(basename "${m}"):yaml"; fi
   grep -qE '^[[:space:]]*namespace:' "${m}" && bad="${bad} $(basename "${m}"):namespace"
-  grep -q 'playground.edb.io/role: postgres' "${m}" || bad="${bad} $(basename "${m}"):node-label"
+  ! grep -q 'playground.edb.io' "${m}" || bad="${bad} $(basename "${m}"):node-label"
 done
 command -v yq >/dev/null 2>&1 || echo "SKIP manifest YAML parsing (yq not installed)"
-ok_if "manifests: valid YAML, no namespace, playground node label" '[ -z "${bad}" ]' "${bad}"
+ok_if "manifests: valid YAML, no namespace, no Playground node label (the control-plane taint keeps PostgreSQL on the workers)" '[ -z "${bad}" ]' "${bad}"
 cl="${UC}/manifests/cluster.yaml"
 ok_if "cluster.yaml: 3 instances, Barman plugin as WAL archiver, ObjectStore, PodMonitor, PostgreSQL 17.5 bookworm" \
   'grep -q "instances: 3" "${cl}" && grep -q "isWALArchiver: true" "${cl}" && grep -q "kind: ObjectStore" "${cl}" && grep -q "kind: PodMonitor" "${cl}" && grep -q "postgresql:17.5-standard-bookworm$" "${cl}"'
@@ -43,12 +43,12 @@ ok_if "restore-cluster.yaml: recovery from the 17.5 bookworm backup" 'grep -q "r
 imgs="$(grep -hoE 'cloudnative-pg/postgresql:[A-Za-z0-9._-]+' "${UC}"/manifests/*.yaml "${SC}"/*.sh | sort -u | sed 's#cloudnative-pg/postgresql:##' | tr '\n' ' ')"
 ok_if "PostgreSQL images are explicit Bookworm tags: ${imgs}" '[ "${imgs}" = "17.5-standard-bookworm 17.6-standard-bookworm 18-standard-bookworm " ]'
 mc="$(sed -n 's/^MC_IMAGE="\(.*\)"/\1/p' "${SC}/99_reset_lab.sh")"
-plat="$(awk '/^mcImage:/{f=1} f&&/repository:/{r=$2} f&&/tag:/{print r":"$2; exit}' "${ROOT}/platform/object-storage/values.yaml")"
+plat="$(awk '/^mcImage:/{f=1} f&&/repository:/{r=$2} f&&/tag:/{print r":"$2; exit}' "${ROOT}/engine/stacks/minio/values.yaml")"
 ok_if "reset uses the platform's pinned MinIO client image (${mc})" '[ -n "${mc}" ] && [ "${mc}" = "${plat}" ]' "platform: ${plat}"
 ok_if "dynamic commands kept: primary and replica found by label (04), version checks and upgrade patches (06)" 'grep -q "instanceRole=primary" "${SC}/04_high_availability.sh" && grep -q "instanceRole=replica" "${SC}/04_high_availability.sh" && grep -q "type merge" "${SC}/06_postgresql_upgrades.sh" && grep -q "type json" "${SC}/06_postgresql_upgrades.sh" && grep -q "SHOW server_version" "${SC}/06_postgresql_upgrades.sh"'
 hits="$(grep -nE '01_install|05_create_data|06_backup_cluster|07_restore|08_minor|09_cluster_admin|10_major|11_cluster-fail|12_major|scenarios/manifests|microservice|major-upgraded|cnpg-community-cluster|fencing|lib\.sh' "${SC}"/*.sh "${UC}"/manifests/*.yaml "${UC}/README.md")"
 ok_if "no obsolete script, manifest, import-upgrade or lib.sh reference in the use case" '[ -z "${hits}" ]' "$(echo "${hits}" | head -3)"
-hits="$(grep -rnE '01_install-cnpg|05_create_data|scenarios/manifests|(06_backup|07_restore|08_minor|09_cluster_admin|10_major|11_cluster-fail|12_major)[a-z_-]*\.sh' "${ROOT}/README.md" "${ROOT}/docs/user-guide.md" "${ROOT}/docs/architecture.md" "${ROOT}/docs/cli.md" "${ROOT}/docs/installation.md" "${ROOT}/tests/engine.sh" "${ROOT}/web" "${ROOT}/engine" 2>/dev/null | grep -v 'cnpg-distributed-topology')"
+hits="$(grep -rnE '01_install-cnpg|05_create_data|scenarios/manifests|(06_backup|07_restore|08_minor|09_cluster_admin|10_major|11_cluster-fail|12_major)[a-z_-]*\.sh' "${ROOT}/README.md" "${ROOT}/tests/engine.sh" "${ROOT}/web" "${ROOT}/engine" 2>/dev/null | grep -v 'cnpg-distributed-topology')"
 ok_if "no reference to a removed scenario in the other docs, tests, web and engine" '[ -z "${hits}" ]' "$(echo "${hits}" | head -3)"
 hits="$(grep -nE '\$\{?USER\}?|PUBLIC_IP|ipify|:3010|:9010|:4200|node\.workshop|k3d|ec2-user|WORKSHOP_|cnpg-hands-on|kind-cnpg-lab|cnpg-lab-[a-z]|localhost:[0-9]|(^|[^a-zA-Z])make( |$)|Makefile|gum ' "${SC}"/*.sh "${UC}"/manifests/*.yaml | grep -v 'make sure')"
 ok_if "no workshop user/IP/port/node/context hard-coded, no Make, no gum" '[ -z "${hits}" ]' "$(echo "${hits}" | head -3)"

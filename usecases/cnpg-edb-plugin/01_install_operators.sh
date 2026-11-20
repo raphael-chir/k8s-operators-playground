@@ -7,7 +7,6 @@ source "${SCRIPT_DIR}/../../engine/lib/ui.sh"
 source "${SCRIPT_DIR}/../../engine/usecase.sh"
 source "${SCRIPT_DIR}/../../.env"
 
-CLUSTER="kind-cnpg-lab-cnpg-edb-plugin-1"
 
 export EDB_SUBSCRIPTION_TOKEN
 : "${EDB_SUBSCRIPTION_TOKEN:?Missing EDB_SUBSCRIPTION_TOKEN in .env}"
@@ -43,7 +42,7 @@ No PostgreSQL cluster is created.
 play() {
 
   ui_info "Select Kubernetes context"
-  ui_command "kubectl config use-context ${CLUSTER}"
+  ui_command "kubectl config use-context ${KUBE_CONTEXT}"
   ui_pause
 
   ui_info "Verify Kubernetes nodes"

@@ -8,3 +8,6 @@ services:
   minio: true
   prometheus: true
   grafana: false
+provider:
+  type: internal
+  name: kind

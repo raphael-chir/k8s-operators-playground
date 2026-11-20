@@ -64,8 +64,6 @@ spec:
   
   # Scheduling: Ensure pods spread across your 3 disks/nodes
   affinity:
-    nodeSelector:
-      playground.edb.io/role: postgres
     podAntiAffinityType: required # Strict: won't start 2 pods on 1 node
     topologyKey: kubernetes.io/hostname
 

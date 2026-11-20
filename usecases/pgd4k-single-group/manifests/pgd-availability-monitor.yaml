@@ -182,7 +182,7 @@ spec:
   restartPolicy: Always
 
   nodeSelector:
-    playground.edb.io/role: platform
+    node-role.kubernetes.io/control-plane: ""
 
   tolerations:
     - key: node-role.kubernetes.io/control-plane

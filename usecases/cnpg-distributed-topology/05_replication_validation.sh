@@ -10,8 +10,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../engine/lib/ui.sh"
 source "${SCRIPT_DIR}/../../engine/usecase.sh"
 
-PRIMARY_CONTEXT="kind-cnpg-lab-cnpg-distributed-topology-1"
-REPLICA_CONTEXT="kind-cnpg-lab-cnpg-distributed-topology-2"
+PRIMARY_CONTEXT="$(usecase_context 1)"
+REPLICA_CONTEXT="$(usecase_context 2)"
 
 show_instruct() {
   ui_note "

@@ -1,4 +1,4 @@
-// AI Use Case Builder panel (docs/ai-builder.md). Talks ONLY to the Playground API under /api/ai-builder/ (a server-side
+// AI Use Case Builder panel. Talks ONLY to the Playground API under /api/ai-builder/ (a server-side
 // proxy): never to the AI Builder's own port, and it never sees the bearer token or any Claude credential.
 // Every backend value goes into the page through textContent / value, never as markup.
 // The first half is pure logic (unit-tested with Node: tests/ai_builder_ui_test.js); the second half is the DOM wiring.
@@ -75,7 +75,7 @@ const AIBCore = {
       showLink: session.state === "awaiting_browser" && AIBCore.isAllowedLoginUrl(session.url || ""),
       showCode: session.state === "awaiting_browser" && session.awaiting_code === true };
   },
-  // --- conversations (SPEC-022) ---
+  // --- conversations ---
   validateMessage(text) {
     const t = (text || "").trim();
     if (!t) return "Write a message.";
@@ -141,7 +141,7 @@ const AIBCore = {
     if (ws && ws.exists && ws.changes && ws.changes.total > 0) return { kind: "unpublished", text: "Unpublished changes", title: "The working copy has changes that are not published to the Lab" };
     return { kind: "readonly", text: "Read-only", title: "No changes in the working copy: the published Lab is untouched" };
   },
-  // --- editing a Lab inside a conversation (SPEC-023) ---
+  // --- editing a Lab inside a conversation ---
   // The pending-changes bar: shown while the working copy differs from the published Lab (or the last change can still be undone).
   describeChanges(ws) {
     const none = { show: false, text: "", conflict: false };
@@ -158,7 +158,7 @@ const AIBCore = {
   // Lines of a unified diff with the class that colors them (file headers "meta", hunk headers "hunk", context lines none).
   diffLines: text => String(text || "").replace(/\n$/, "").split("\n").map(l => ({
     cls: l.startsWith("+++") || l.startsWith("---") ? "meta" : l.startsWith("@@") ? "hunk" : l.startsWith("+") ? "add" : l.startsWith("-") ? "del" : "", text: l })),
-  // --- the docked panel (SPEC-024) ---
+  // --- the docked panel ---
   // Width of the panel for a requested width: at least AIB_PANEL_MIN, at most 90% of <main> (the viewport), and always leaving
   // AIB_TERMINAL_MIN pixels to the terminal area (<main> minus the sidebar). Unknown or absurd values fall back to the default.
   clampPanelWidth(width, mainWidth, sidebarWidth) {
@@ -293,7 +293,7 @@ if (typeof document !== "undefined") (function () {
     S.canGenerate = d.canGenerate; S.reason = d.canGenerate ? "" : d.badge;
   }
 
-  // --- Claude sign-in (docs/ai-builder.md): the AI Builder runs `claude auth login` in a controlled PTY; this panel shows the official
+  // --- Claude sign-in: the AI Builder runs `claude auth login` in a controlled PTY; this panel shows the official
   // sign-in address, takes the pasted code and follows the session. The code lives only in the input field: it is sent once, then the field is
   // cleared, and it is never kept in a variable, in localStorage or in the page.
   const sessionActive = () => !!(S.auth && S.auth.session && AIB_AUTH_ACTIVE.includes(S.auth.session.state));
@@ -410,7 +410,7 @@ if (typeof document !== "undefined") (function () {
 
   function renderAll() { renderHealth(); renderAuth(); renderChat(); }
 
-  // --- Conversations (SPEC-022): read-only chats with Claude Code. The server keeps the conversation and Claude's own session;
+  // --- Conversations: read-only chats with Claude Code. The server keeps the conversation and Claude's own session;
   // this tab only lists, opens, sends a message and follows the reply. Replies, titles and errors go in through textContent.
   const C = { list: [], conv: null, pollToken: 0, sending: false, creating: false, stick: true, sig: "", shown: 0, forceScroll: false, filesCollapsed: false,
     review: null, reviewOpen: false, revFile: null, ops: { review: false, undo: false, reset: false, discard: false, publish: false, remove: false }, confirm: { reset: false, discard: false, del: false },
@@ -522,7 +522,7 @@ if (typeof document !== "undefined") (function () {
       if (C.confirmDel === id) { C.delInfo = { pending }; renderConvSelect(); }
     } catch (_) { /* the confirmation is shown without the count */ }
   }
-  // --- pending changes of a Lab conversation (SPEC-023): review, undo, reset, start over, publish ---------------------------------
+  // --- pending changes of a Lab conversation: review, undo, reset, start over, publish ---------------------------------
   const anyOp = () => Object.values(C.ops).some(Boolean);
   function closeChangeReview() { C.reviewOpen = false; C.review = null; C.revFile = null; $("aib-cr-confirm").checked = false; }
   // Several Labs can each have a working copy (P3.2b): the bar shows one at a time, chosen in a small selector; one Lab only: nothing changes.

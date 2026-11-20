@@ -2,7 +2,7 @@
 API (all under /api): use case discovery and start/stop (delegated to engine/usecase-list.sh and the existing
 `./playground usecase start|stop`, so no naming logic here), the persistent terminal sessions (engine/terminal.sh),
 a read-only status of the selected terminal (context, clusters, Grafana/MinIO links) and read-only Docker resource
-monitoring. See docs/architecture.md."""
+monitoring."""
 import os
 import json
 import re
@@ -78,12 +78,14 @@ def meta():
 
 
 def _use_case_meta():
-    """{name: (title, description)} from each usecases/<name>/usecase.yaml, read by engine/usecase-list.sh --meta."""
+    """{name: (title, description, provider type, provider name)} from each usecases/<name>/usecase.yaml, read by engine/usecase-list.sh --meta."""
     out = subprocess.run(["bash", str(ROOT / "engine/usecase-list.sh"), "--meta"],
                          capture_output=True, text=True, timeout=15)
     if out.returncode != 0:
         raise HTTPException(503, out.stderr.strip() or "use case discovery failed")
-    return {n: (t, d) for n, t, d in (line.split("\t", 2) for line in out.stdout.splitlines())}
+    prov = subprocess.run(["bash", str(ROOT / "engine/usecase-list.sh"), "--providers"], capture_output=True, text=True, timeout=15)
+    kinds = {n: (t, k) for n, t, k in (line.split("\t") for line in prov.stdout.splitlines())} if prov.returncode == 0 else {}
+    return {n: (t, d, *kinds.get(n, ("internal", "kind"))) for n, t, d in (line.split("\t", 2) for line in out.stdout.splitlines())}
 
 
 @app.get("/api/usecases")
@@ -91,8 +93,8 @@ def usecases():
     items = []
     meta = _use_case_meta()
     for name, count in _discover():
-        title, description = meta.get(name, (name, ""))
-        items.append({"name": name, "title": title, "description": description,
+        title, description, ptype, pname = meta.get(name, (name, "", "internal", "kind"))
+        items.append({"name": name, "title": title, "description": description, "provider": {"type": ptype, "name": pname},
                       "status": "running" if count > 0 else "stopped", "clusters": count,
                       "operation": _public(_ops.get(name))})
     return {"usecases": items}
@@ -156,7 +158,7 @@ def operation(name: str, offset: int = 0):
     return {**_public(op), "log": data.decode(errors="replace"), "offset": max(offset, 0) + len(data)}
 
 
-# --- Terminals: one tab = one ttyd connection = one Bash process (engine/terminal.sh, SPEC-007.1.7). The backend
+# --- Terminals: one tab = one ttyd connection = one Bash process (engine/terminal.sh). The backend
 # only lists the tabs; it never starts, inspects or stops a shell, and the browser never sends a command.
 SESSION_PREFIX = "playground-"
 
@@ -189,7 +191,6 @@ def _current_context(text):
     match = _CONTEXT_FILE_RE.search(text)
     return (next(g for g in match.groups() if g is not None) or None) if match else None
 _STATUS_TTL = 5
-GRAFANA_NODE_PORT, MINIO_CONSOLE_NODE_PORT = 30082, 30084     # fixed NodePorts, same as engine/usecase-clusters.sh
 _clusters_cache: dict = {}            # use case -> (time, (rows, error))
 _contexts_cache = {"mtime": None, "names": set(), "current": None}
 
@@ -238,7 +239,8 @@ def _service_up(host, port):
 
 
 def _usecase_clusters(name):
-    """([(cluster, grafana_port, console_port, grafana_up, console_up)], error), cached a few seconds."""
+    """([(cluster, context, grafana_port, console_port, grafana_up, console_up)], error), cached a few seconds.
+    The provider (through engine/usecase-clusters.sh) supplies the context, the address and the NodePorts."""
     cached = _clusters_cache.get(name)
     if cached and time.time() - cached[0] < _STATUS_TTL:
         return cached[1]
@@ -249,10 +251,9 @@ def _usecase_clusters(name):
             raise RuntimeError(out.stderr.strip() or "cluster discovery failed")
         rows = []
         for line in out.stdout.splitlines():
-            cluster, g, m = (line.split("\t") + ["", ""])[:3]
-            host = f"{cluster}-control-plane"
-            rows.append((cluster, g, m, bool(g) and _service_up(host, GRAFANA_NODE_PORT),
-                         bool(m) and _service_up(host, MINIO_CONSOLE_NODE_PORT)))
+            cluster, g, m, context, address, g_node, m_node = (line.split("\t") + [""] * 7)[:7]
+            rows.append((cluster, context, g, m, bool(g and address and g_node) and _service_up(address, int(g_node)),
+                         bool(m and address and m_node) and _service_up(address, int(m_node))))
         result = (rows, None)
     except (RuntimeError, subprocess.TimeoutExpired) as exc:
         result = ([], str(exc) or "cluster discovery timed out")
@@ -276,9 +277,9 @@ def status(request: Request, terminal: str = "main"):
         host = request.url.hostname or "127.0.0.1"
         host = f"[{host}]" if ":" in host else host
         rows, error = _usecase_clusters(usecase)
-        for cluster, g, m, g_up, m_up in rows:
+        for cluster, cluster_context, g, m, g_up, m_up in rows:
             body["clusters"].append({
-                "name": cluster, "context": f"kind-{cluster}",
+                "name": cluster, "context": cluster_context,
                 "grafana_url": f"http://{host}:{g}" if g_up else None,
                 "minio_console_url": f"http://{host}:{m}" if m_up else None})
         op = _ops.get(usecase)
@@ -293,6 +294,8 @@ def status(request: Request, terminal: str = "main"):
 # Playground workloads = node containers of Kind clusters named by the playground convention (managed_clusters),
 # identified by Kind's own container label. Other containers only count in the engine-wide numbers.
 KIND_LABEL = "io.x-k8s.kind.cluster"
+K3D_LABEL = "k3d.cluster"
+K3D_ROLE_LABEL = "k3d.role"
 _RES_INTERVAL, _RES_IDLE_STOP = 5, 30
 _UNITS = {"b": 1, "kb": 1000, "mb": 1000**2, "gb": 1000**3, "tb": 1000**4,
           "kib": 1024, "mib": 1024**2, "gib": 1024**3, "tib": 1024**4}
@@ -324,10 +327,13 @@ def _collect_resources():
     if clusters.returncode != 0:
         raise RuntimeError(clusters.stderr.strip() or "cluster discovery failed")
     managed = set(clusters.stdout.split())
-    # <name>|<state>|<kind cluster label>; labels are Docker metadata, so no name guessing for the nodes.
+    # <name>|<state>|<kind cluster label>|<k3d cluster label>; labels are Docker metadata, so no name guessing for the nodes.
     nodes = {}                                  # container name -> (cluster, running)
-    for line in _docker("ps", "-a", "--format", '{{.Names}}|{{.State}}|{{.Label "%s"}}' % KIND_LABEL).splitlines():
-        name, state, cluster = (line.split("|") + ["", ""])[:3]
+    for line in _docker("ps", "-a", "--format", '{{.Names}}|{{.State}}|{{.Label "%s"}}|{{.Label "%s"}}|{{.Label "%s"}}' % (KIND_LABEL, K3D_LABEL, K3D_ROLE_LABEL)).splitlines():
+        name, state, kind_cluster, k3d_cluster, k3d_role = (line.split("|") + ["", "", "", ""])[:5]
+        cluster = kind_cluster or k3d_cluster
+        if k3d_cluster and not kind_cluster and k3d_role not in ("server", "agent"):
+            continue                            # k3d's load balancer and tools containers are not Kubernetes nodes
         if cluster in managed:
             nodes[name] = (cluster, state == "running")
     running = [n for n, (_, up) in nodes.items() if up]
@@ -368,6 +374,21 @@ def _resource_loop():
         _res["thread"] = None
 
 
+HOST_METRICS_FILE = ROOT / ".host-metrics.json"     # written on the HOST (the repo is bind-mounted); containers cannot see the Mac's own CPU/RAM
+_HOST_MAX_AGE = 30
+
+
+def _host_metrics():
+    """{cpu_percent, cpus, mem_used_bytes, mem_total_bytes} of the machine running Docker, or None when no fresh host sample exists."""
+    try:
+        m = json.loads(HOST_METRICS_FILE.read_text())
+        if time.time() - float(m["ts"]) > _HOST_MAX_AGE:
+            return None
+        return {**{k: m[k] for k in ("cpu_percent", "cpus", "mem_used_bytes", "mem_total_bytes")}, "os": m.get("os", "unknown")}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
 @app.get("/api/docker/resources")
 def docker_resources():
     with _res_lock:
@@ -380,12 +401,12 @@ def docker_resources():
     with _res_lock:
         snap, error = _res["snapshot"], _res["error"]
     if snap is None:
-        return {"engine": None, "playground": None, "updated_at": None, "age_seconds": None, "stale": True,
+        return {"engine": None, "playground": None, "host": _host_metrics(), "updated_at": None, "age_seconds": None, "stale": True,
                 "error": error or "no measurement yet"}
-    return {"engine": snap["engine"], "playground": snap["playground"], "updated_at": snap["updated_at"],
+    return {"engine": snap["engine"], "playground": snap["playground"], "host": _host_metrics(), "updated_at": snap["updated_at"],
             "age_seconds": round(time.time() - snap["_t"], 1), "stale": error is not None, "error": error}
 
-# --- AI Builder proxy (docs/ai-builder.md): all logic, limits and security checks live in ai_builder_proxy.py; the token
+# --- AI Builder proxy: all logic, limits and security checks live in ai_builder_proxy.py; the token
 # stays on the server. These routes only convert the HTTP request to its arguments and the result to a JSON response.
 try:
     _aib = ai_builder_proxy.Proxy()

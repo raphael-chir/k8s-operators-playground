@@ -5,7 +5,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../engine/lib/ui.sh"
 source "${SCRIPT_DIR}/../../engine/usecase.sh"
 
-CLUSTER="kind-cnpg-lab-cnpg-edb-plugin-1"
 
 show_instruct() {
   ui_note "
@@ -22,7 +21,7 @@ Perform controlled switchovers on both clusters.
 
 play() {
   ui_info "Select Kubernetes context"
-  ui_command "kubectl config use-context ${CLUSTER}"
+  ui_command "kubectl config use-context ${KUBE_CONTEXT}"
   ui_pause
 
   ui_info "Check initial cluster status"

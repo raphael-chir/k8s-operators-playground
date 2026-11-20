@@ -1,4 +1,4 @@
-"""Server-side proxy from the Playground API (/api/ai-builder/*) to the AI Builder container (docs/ai-builder.md).
+"""Server-side proxy from the Playground API (/api/ai-builder/*) to the AI Builder container.
 
 Standard library only. The browser never sees the AI Builder's address or its bearer token: the token is read from a
 file on the server for every request and only ever sent to the one configured upstream.
@@ -34,19 +34,19 @@ OPERATIONS = {
     "review":   ("GET",  "/review/{job}",     15, True,  False),
     "approve":  ("POST", "/approve/{job}",    30, True,  False),
     "publish":  ("POST", "/publish/{job}",    60, True,  False),
-    # Claude sign-in (docs/ai-builder.md): narrow routes, not a terminal. The code is forwarded once and never logged here.
+    # Claude sign-in: narrow routes, not a terminal. The code is forwarded once and never logged here.
     "auth_status": ("GET",  "/auth/status", 25, False, False),
     "auth_login":  ("POST", "/auth/login",  20, False, True),
     "auth_code":   ("POST", "/auth/code",   20, False, True),
     "auth_cancel": ("POST", "/auth/cancel", 15, False, False),
     "auth_logout": ("POST", "/auth/logout", 55, False, False),
-    # AI Lab Assistant conversations (SPEC-022): the id is a conversation id (validated), the message text is a JSON field.
+    # AI Lab Assistant conversations: the id is a conversation id (validated), the message text is a JSON field.
     "conv_create": ("POST", "/conversations",                 20, False, True),
     "conv_list":   ("GET",  "/conversations",                 10, False, False),
     "conv_get":    ("GET",  "/conversations/{conv}",          15, True,  False),
     "conv_send":   ("POST", "/conversations/{conv}/messages", 30, True,  True),
     "conv_delete": ("DELETE", "/conversations/{conv}",        30, True,  False),
-    # Conversational Lab editing (SPEC-023): the working copy of a Lab conversation. Publication is an explicit POST with the reviewed hash.
+    # Conversational Lab editing: the working copy of a Lab conversation. Publication is an explicit POST with the reviewed hash.
     "conv_review":  ("GET",  "/conversations/{conv}/review",  40, True,  False),
     "conv_undo":    ("POST", "/conversations/{conv}/undo",    30, True,  False),
     "conv_reset":   ("POST", "/conversations/{conv}/reset",   30, True,  False),

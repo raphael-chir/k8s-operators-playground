@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Real-browser check of the AI Lab Assistant panel layout (SPEC-024): the REAL index.html and stylesheets in headless Chrome with a
+# Real-browser check of the AI Lab Assistant panel layout: the REAL index.html and stylesheets in headless Chrome with a
 # stand-in terminal iframe, stubbed API routes and a scripted driver (tests/ui_browser_page.py). It measures what a fake DOM cannot:
 # the docked layout, that the workspace is resized and not covered, that the terminal's own viewport shrinks and grows with its column (what xterm.js refits to), the drag and
 # the limits, scrolling, the sticky composer, Markdown/diff rendering, the narrow full-screen panel and both themes.

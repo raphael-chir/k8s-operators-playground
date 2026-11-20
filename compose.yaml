@@ -16,9 +16,13 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock   # Docker-outside-of-Docker
       - .:/workspace
       - kube:/root/.kube              # kubeconfig survives restarts
+      # The host kubeconfig, READ-ONLY, so that starting an external use case (provider external) from the Web UI can import its one
+      # configured context. ./playground sets PLAYGROUND_HOST_KUBECONFIG to the file kubectl uses on the host; without it, /dev/null
+      # (nothing readable). It is only ever read, by engine/providers/external/provider.sh, and never written.
+      - ${PLAYGROUND_HOST_KUBECONFIG:-/dev/null}:/host-kubeconfig:ro
       - history:/root/.history        # bash history survives restarts
 
-  # Optional AI Use Case Builder (docs/ai-builder.md): started on demand with `./playground ai-builder start`
+  # Optional AI Use Case Builder: started on demand with `./playground ai-builder start`
   # (profile "ai-builder"), never by `./playground start`. Claude Code runs here and writes only /state (jobs, drafts, working copies)
   # and its own login volume: usecases/ is READ-ONLY in this container. Publishing is done by `ai-publisher` below, the only writer.
   ai-builder:
@@ -60,23 +64,23 @@ services:
       # Read-only: the service code and ONLY what the agent needs to read. No .env, .git, compose.yaml or tests.
       - ./ai-builder:/workspace/ai-builder:ro
       - ./.claude:/workspace/.claude:ro
-      - ./CLAUDE.md:/workspace/CLAUDE.md:ro
       - ./VERSION:/workspace/VERSION:ro
       - ./docs:/workspace/docs:ro
       - ./engine:/workspace/engine:ro
-      - ./platform:/workspace/platform:ro
       - ./usecases:/workspace/usecases:ro
       # Read-write: jobs, drafts, conversations and Lab working copies (bind mount: they stay in the repository tree, git-ignored).
       - ${AI_BUILDER_STATE_DIR:-./.ai-builder}:/state
       # The Claude login (credentials) lives only here: a dedicated volume, never the repository.
       - claude-auth:/home/builder
 
-  # The only writer of published Labs (SPEC-023). No Claude Code, no login, no port on the host: it reads the state directory
+  # The only writer of published Labs. No Claude Code, no login, no port on the host: it reads the state directory
   # READ-ONLY, checks the content hash, validates and publishes (atomic swap). The AI Builder cannot write usecases/ itself,
   # so even a misbehaving Claude Code cannot change a published Lab: that is enforced by the mounts, not by permission flags.
   ai-publisher:
     profiles: ["ai-builder"]
     image: cnpg-ai-builder:local
+    build:
+      context: ./ai-builder             # the same image as ai-builder: without `build`, Compose tries to pull this local tag first
     container_name: cnpg-ai-publisher
     command: ["python3", "/workspace/ai-builder/publisher.py"]
     init: true

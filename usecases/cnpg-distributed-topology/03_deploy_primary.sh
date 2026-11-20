@@ -10,8 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../engine/lib/ui.sh"
 source "${SCRIPT_DIR}/../../engine/usecase.sh"
 
-KUBE_CONTEXT="kind-cnpg-lab-cnpg-distributed-topology-1"
-REPLICA_NODE="cnpg-lab-cnpg-distributed-topology-2-control-plane"
+# KUBE_CONTEXT (cluster 1) comes from engine/usecase.sh
 
 show_instruct() {
   ui_note "
@@ -59,7 +58,7 @@ play() {
   ui_command "vim manifests/cluster-primary.yaml"
   ui_pause
 
-  REPLICA_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${REPLICA_NODE}")
+  REPLICA_IP=$(usecase_cluster_address 2)
 
   ui_info "Cluster 2 PostgreSQL endpoint: ${REPLICA_IP}:30432"
   ui_info "Inject this IP into the primary manifest at deployment time (source file unchanged)"

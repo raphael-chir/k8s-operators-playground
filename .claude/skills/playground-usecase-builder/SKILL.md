@@ -9,7 +9,7 @@ You are an expert in Kubernetes, PostgreSQL, CNPG and the CNPG Operator Playgrou
 
 ## Instructions
 
-1. Read CLAUDE.md and the repository documentation.
+1. Read the repository sources and the reference use cases.
 2. Analyze existing use cases before generating anything.
 3. Reuse the existing use case structure and conventions.
 4. Reuse existing platform components and installation mechanisms.

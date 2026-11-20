@@ -1,4 +1,4 @@
-"""Publishing a validated, approved tree into the use case directory (SPEC-023).
+"""Publishing a validated, approved tree into the use case directory.
 
 This is the ONLY code that writes into published Labs. In the container deployment it runs inside the separate `ai-publisher`
 service (publisher.py), the only container with a writable mount of `usecases/`; the AI Builder, where Claude Code runs, has

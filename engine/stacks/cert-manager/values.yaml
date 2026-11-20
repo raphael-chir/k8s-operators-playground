@@ -1,0 +1,18 @@
+# cert-manager has one scheduling block per component and a strict values schema.
+# Run on the control-plane node: the native node-role label selects it and its NoSchedule taint is tolerated.
+nodeSelector: &platform_nodeselector
+  node-role.kubernetes.io/control-plane: ""
+tolerations: &platform_tolerations
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+
+webhook:
+  nodeSelector: *platform_nodeselector
+  tolerations: *platform_tolerations
+cainjector:
+  nodeSelector: *platform_nodeselector
+  tolerations: *platform_tolerations
+startupapicheck:
+  nodeSelector: *platform_nodeselector
+  tolerations: *platform_tolerations

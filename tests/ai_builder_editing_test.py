@@ -1,4 +1,4 @@
-"""Tests of conversational Lab editing (SPEC-023): working copy, publisher, permissions, review, undo/reset, conflicts, publication.
+"""Tests of conversational Lab editing: working copy, publisher, permissions, review, undo/reset, conflicts, publication.
 A scripted runner stands in for Claude Code: no real Claude call, no Docker, Kubernetes or Helm. Run: tests/ai-builder.sh"""
 import json
 import os

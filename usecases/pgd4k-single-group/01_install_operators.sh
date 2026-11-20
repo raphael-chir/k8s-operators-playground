@@ -37,7 +37,7 @@ play() {
   ui_pause
 
   ui_info "Verify Kubernetes nodes"
-  ui_command "kubectl get nodes -L playground.edb.io/role"
+  ui_command "kubectl get nodes"
   ui_pause
 
   ui_info "Create the PGD4K operator namespace"
@@ -69,7 +69,7 @@ play() {
   ui_pause
 
   ui_info "Install Barman Cloud Plugin 0.8.1 on the platform node"
-  ui_command 'helm upgrade --install plugin-barman-cloud cnpg/plugin-barman-cloud --namespace pgd-operator-system --version 0.8.1 --set nodeSelector.playground\\.edb\\.io/role=platform --set tolerations[0].key=node-role.kubernetes.io/control-plane --set tolerations[0].operator=Exists --set tolerations[0].effect=NoSchedule --wait --timeout 300s'
+  ui_command "helm upgrade --install plugin-barman-cloud cnpg/plugin-barman-cloud --namespace pgd-operator-system --version 0.8.1 --set-json 'nodeSelector={\"node-role.kubernetes.io/control-plane\":\"\"}' --set 'tolerations[0].key=node-role.kubernetes.io/control-plane' --set 'tolerations[0].operator=Exists' --set 'tolerations[0].effect=NoSchedule' --wait --timeout 300s"
   ui_pause
 
   ui_info "Read Barman Cloud Plugin discovery annotations"

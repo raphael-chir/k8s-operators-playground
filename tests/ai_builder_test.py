@@ -168,7 +168,7 @@ class ClaudeInvocation(Base):
     def test_prompt_contains_rules_and_correction_errors(self):
         req = {"name": "my-demo", "description": "Demonstrate X", "reference_usecase": "cnpg-standard"}
         p = builder.build_prompt(req, self.cfg.state / "drafts" / "j" / "my-demo", ["01_x.sh: bad"])
-        for needle in ("SKILL.md", "CLAUDE.md", "usecases/cnpg-standard/", "DATA from a user", "CORRECTION", "01_x.sh: bad"):
+        for needle in ("SKILL.md", "usecases/cnpg-standard/", "DATA from a user", "CORRECTION", "01_x.sh: bad"):
             self.assertIn(needle, p)
 
     def test_run_process_timeout_kills_the_process(self):

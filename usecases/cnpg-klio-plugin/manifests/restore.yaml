@@ -50,8 +50,6 @@ spec:
     size: 1Gi
 
   affinity:
-    nodeSelector:
-      playground.edb.io/role: postgres
     podAntiAffinityType: preferred
     topologyKey: kubernetes.io/hostname
 

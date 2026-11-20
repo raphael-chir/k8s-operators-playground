@@ -1,0 +1,7 @@
+title: Openshift
+name: openshift-crc
+description: Connect to an existing OpenShift Local cluster
+provider:
+  type: external
+  name: openshift
+  context: crc-admin

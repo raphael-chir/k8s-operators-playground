@@ -6,8 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../engine/lib/ui.sh"
 source "${SCRIPT_DIR}/../../engine/usecase.sh"
 
-CLUSTER1="kind-cnpg-lab-cnpg-distributed-topology-1"
-CLUSTER2="kind-cnpg-lab-cnpg-distributed-topology-2"
+CLUSTER1="$(usecase_context 1)"
+CLUSTER2="$(usecase_context 2)"
 
 show_instruct() {
   ui_note "
