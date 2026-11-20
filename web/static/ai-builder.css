@@ -13,9 +13,9 @@ main #aib {                                          /* beats the generic `aside
   max-height: none; border-bottom: 0;                  /* style.css restyles every `aside` as a short top strip on narrow windows (max-height: 40vh, 0 when the sidebar is collapsed) */
   display: flex; flex-direction: column; background: var(--bg); color: var(--text);
   border-right: 0; border-left: 1px solid var(--border);
-  --code-bg: #f3f7f9; --tk-str: #0a7a5a; --tk-kw: #7b3fa0; --tk-num: #a35200; --tk-key: #1f5f8b; --tk-var: #9a4a00; --tk-add: #04725322; --tk-del: #c8472b22;
+  --code-bg: #f1f6f8; --tk-str: #0a7a5a; --tk-kw: #7b3fa0; --tk-num: #a35200; --tk-key: #1f5f8b; --tk-var: #9a4a00; --tk-add: #04725322; --tk-del: #c8472b22;
 }
-:root[data-theme="dark"] main #aib { --code-bg: #0a171d; --tk-str: #7fd1a8; --tk-kw: #c8a2f0; --tk-num: #f0b36b; --tk-key: #8fc7da; --tk-var: #f0b36b; --tk-add: #2fb88c26; --tk-del: #f28b6e26; }
+:root[data-theme="dark"] main #aib { --code-bg: #1e1e1e; --tk-str: #7fd1a8; --tk-kw: #c8a2f0; --tk-num: #f0b36b; --tk-key: #8fc7da; --tk-var: #f0b36b; --tk-add: #2fb88c26; --tk-del: #f28b6e26; }
 #aib [hidden], #aib[hidden], #aib-resizer[hidden] { display: none !important; }
 #aib * { box-sizing: border-box; }
 .aib-resizer { flex: none; width: 8px; margin: 0 -4px; position: relative; z-index: 3; cursor: col-resize; touch-action: none; }
@@ -212,7 +212,7 @@ main.aib-dragging #panes iframe { pointer-events: none; }        /* a terminal n
 #aib .aib-errors { margin: 0; padding: 8px 10px 8px 28px; border: 1px solid var(--bad); border-radius: 8px; color: var(--bad); background: var(--surface); font-size: 12.5px; line-height: 1.5; }
 #aib .aib-errors li { margin: 2px 0; overflow-wrap: anywhere; }
 
-#aib .aib-code { margin: 0; max-height: 300px; overflow: auto; padding: 8px 0; font-size: 12px; line-height: 1.5; color: #e8f2f5; background: #0d1e25; border: 1px solid var(--border); border-radius: 8px; tab-size: 4; }
+#aib .aib-code { margin: 0; max-height: 300px; overflow: auto; padding: 8px 0; font-size: 12px; line-height: 1.5; color: #cccccc; background: #1e1e1e; border: 1px solid var(--border); border-radius: 8px; tab-size: 4; }
 #aib .aib-code .ln { display: flex; }
 #aib .aib-code .n { flex: none; width: 3.2em; padding-right: 10px; text-align: right; color: #7d99a4; user-select: none; }
 #aib .aib-code .c { white-space: pre; padding-right: 12px; }

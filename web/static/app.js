@@ -238,12 +238,23 @@ async function api(method, path, body) {
 const PROVIDER_ICONS = { kind: "icons/kind.svg", k3d: "icons/k3d.svg", openshift: "icons/openshift.svg" };
 const DEFAULT_PROVIDER_ICON = "icons/kubernetes.svg";
 function providerIcon(u) {
-  const pname = u.provider && u.provider.name;
-  const img = document.createElement("img");
-  img.className = "uc-provider";
-  img.src = PROVIDER_ICONS[pname] || DEFAULT_PROVIDER_ICON;
+  const pname = u.provider && u.provider.name, known = Object.prototype.hasOwnProperty.call(PROVIDER_ICONS, pname);
+  const img = document.createElement("img");                // the official logo, 36px, aspect ratio kept (object-fit: contain)
+  img.className = "uc-logo";
+  img.dataset.provider = known ? pname : "default";
+  img.src = known ? PROVIDER_ICONS[pname] : DEFAULT_PROVIDER_ICON;
   img.alt = ""; img.title = pname || "kubernetes";
   return img;
+}
+// Start / Stop glyphs of the 32px action button (built with createElementNS: no markup from data).
+function actionIcon(kind) {
+  const NS = "http://www.w3.org/2000/svg", svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("aria-hidden", "true");
+  const shape = document.createElementNS(NS, kind === "stop" ? "rect" : "path");
+  if (kind === "stop") { shape.setAttribute("x", "6"); shape.setAttribute("y", "6"); shape.setAttribute("width", "12"); shape.setAttribute("height", "12"); shape.setAttribute("rx", "2"); }
+  else shape.setAttribute("d", "M8 5.5v13a1 1 0 0 0 1.5.86l10.4-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z");
+  svg.append(shape);
+  return svg;
 }
 
 // Sidebar groups: Running first, then Available; an instant case-insensitive filter; each group collapses (kept in memory).
@@ -271,47 +282,52 @@ searchBox.addEventListener("paste", () => { searchTyped = true; });
 searchBox.oninput = () => { if (!searchTyped && searchBox.value) searchBox.value = ""; if (!searchBox.value) searchTyped = false; render(); };
 
 function ucItem(u, selected) {
-    const op = u.operation;
-    const li = document.createElement("li");
-    li.className = u.status + (u.name === selected ? " selected" : "");
-    li.onclick = () => selectUseCase(u.name);
+  const op = u.operation, running = u.status === "running";
+  const li = document.createElement("li");
+  li.className = "uc-card " + u.status + (u.name === selected ? " selected" : "");
+  li.onclick = () => selectUseCase(u.name);
+  if (u.description) li.title = u.description;
 
-    const row = document.createElement("div");
-    row.className = "uc-row";
-    const name = document.createElement("div");
-    name.className = "uc-name";
-    name.append(providerIcon(u), u.title || u.name);
-    if (u.description) li.title = u.description;
-    const button = document.createElement("button");
-    button.type = "button";
-    if (active(op)) {
-      button.disabled = true;
-      button.className = "busy";
-      button.textContent = op.state === "starting" ? "Starting" : "Stopping";
-    } else {
-      button.textContent = u.status === "running" ? "Stop" : "Start";
-      button.onclick = e => { e.stopPropagation(); (u.status === "running" ? askStop : start)(u.name); };
-    }
-    row.append(name, button);
+  const center = document.createElement("div");
+  center.className = "uc-center";
+  const name = document.createElement("div");
+  name.className = "uc-name";
+  name.textContent = u.title || u.name;
+  const meta = document.createElement("div");
+  meta.className = "uc-meta";
+  const dot = document.createElement("i");
+  dot.className = "uc-dot";
+  meta.append(dot, `${running ? "Running" : "Stopped"} · ${u.clusters} cluster${u.clusters === 1 ? "" : "s"}`);
+  center.append(name, meta);
+  if (op) {
+    const line = document.createElement("div");
+    line.className = "uc-op" + (op.state === "failed" ? " failed" : "");
+    const label = document.createElement("span");
+    label.className = "timer";
+    label.textContent = opText(u);
+    opViews.set(u.name, label);
+    const link = document.createElement("a");
+    link.textContent = "logs";
+    link.onclick = e => { e.stopPropagation(); openLogs(u.name); };
+    line.append(label, " · ", link);
+    center.append(line);
+  }
 
-    const meta = document.createElement("div");
-    meta.className = "uc-meta";
-    meta.textContent = `${u.status === "running" ? "Running" : "Stopped"} · ${u.clusters} cluster${u.clusters === 1 ? "" : "s"}`;
-    li.append(row, meta);
-
-    if (op) {
-      const line = document.createElement("div");
-      line.className = "uc-op" + (op.state === "failed" ? " failed" : "");
-      const label = document.createElement("span");
-      label.className = "timer";
-      label.textContent = opText(u);
-      opViews.set(u.name, label);
-      const link = document.createElement("a");
-      link.textContent = "logs";
-      link.onclick = e => { e.stopPropagation(); openLogs(u.name); };
-      line.append(label, " · ", link);
-      li.append(line);
-    }
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "uc-action " + (running ? "stop" : "start");
+  button.append(actionIcon(running ? "stop" : "start"));
+  if (active(op)) {
+    button.disabled = true;
+    button.classList.add("busy");
+    const label = op.state === "starting" ? "Starting" : "Stopping";
+    button.title = label; button.setAttribute("aria-label", label);
+  } else {
+    const label = running ? "Stop" : "Start";
+    button.title = label; button.setAttribute("aria-label", `${label} ${u.title || u.name}`);
+    button.onclick = e => { e.stopPropagation(); (running ? askStop : start)(u.name); };   // never selects the card
+  }
+  li.append(providerIcon(u), center, button);
   return li;
 }
 
@@ -653,19 +669,57 @@ setInterval(refreshResources, 4000);
 
 // --- Sidebar toggle: CSS class only (iframes and running commands are untouched), remembered per browser.
 const mainEl = document.querySelector("main");
-const sidebarToggle = document.getElementById("sidebar-toggle");
+const sidebarToggle = document.getElementById("sidebar-toggle"), sidebarReveal = document.getElementById("sidebar-reveal");
 const sidebarStore = {
   get() { try { return localStorage.getItem("sidebarCollapsed") === "1"; } catch (_) { return false; } },
   set(v) { try { localStorage.setItem("sidebarCollapsed", v ? "1" : "0"); } catch (_) { /* optional */ } },
 };
 function setSidebar(collapsed, { remember = true } = {}) {
   mainEl.classList.toggle("collapsed", collapsed);
-  sidebarToggle.setAttribute("aria-expanded", String(!collapsed));
-  sidebarToggle.title = collapsed ? "Show sidebar" : "Hide sidebar";
+  for (const b of [sidebarToggle, sidebarReveal]) {
+    b.setAttribute("aria-expanded", String(!collapsed));
+    b.title = collapsed ? "Show sidebar" : "Hide sidebar";
+  }
   if (remember) sidebarStore.set(collapsed);
 }
-sidebarToggle.onclick = () => { setSidebar(!mainEl.classList.contains("collapsed")); focusActive(); };
+sidebarToggle.onclick = sidebarReveal.onclick = () => { setSidebar(!mainEl.classList.contains("collapsed")); focusActive(); };
 setSidebar(sidebarStore.get(), { remember: false });
+
+// Sidebar width: 320px by default, 260-480px, dragged on its right edge, remembered in localStorage (a convenience only).
+const SIDEBAR_MIN = 260, SIDEBAR_MAX = 480, SIDEBAR_DEFAULT = 320;
+const sidebarEl = document.getElementById("sidebar"), resizer = document.getElementById("sidebar-resizer");
+const clampWidth = w => Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, Math.round(w)));
+const setSidebarWidth = (w, remember) => {
+  const width = clampWidth(w);
+  mainEl.style.setProperty("--sidebar-w", width + "px");
+  resizer.setAttribute("aria-valuenow", String(width));
+  if (remember) { try { localStorage.setItem("sidebarWidth", String(width)); } catch (_) { /* optional */ } }
+  return width;
+};
+{
+  let saved = SIDEBAR_DEFAULT;
+  try { const v = parseInt(localStorage.getItem("sidebarWidth"), 10); if (v >= SIDEBAR_MIN && v <= SIDEBAR_MAX) saved = v; } catch (_) { /* default */ }
+  setSidebarWidth(saved, false);
+}
+resizer.addEventListener("pointerdown", e => {
+  e.preventDefault();
+  resizer.setPointerCapture(e.pointerId);                     // keeps the drag even over the terminal iframes
+  mainEl.classList.add("resizing");
+  const left = sidebarEl.getBoundingClientRect().left;
+  const move = ev => setSidebarWidth(ev.clientX - left, false);
+  const up = ev => {
+    resizer.removeEventListener("pointermove", move); resizer.removeEventListener("pointerup", up); resizer.removeEventListener("pointercancel", up);
+    mainEl.classList.remove("resizing");
+    setSidebarWidth(ev.clientX - left, true);
+  };
+  resizer.addEventListener("pointermove", move); resizer.addEventListener("pointerup", up); resizer.addEventListener("pointercancel", up);
+});
+resizer.addEventListener("dblclick", () => setSidebarWidth(SIDEBAR_DEFAULT, true));
+resizer.addEventListener("keydown", e => {
+  if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+  e.preventDefault();
+  setSidebarWidth(sidebarEl.getBoundingClientRect().width + (e.key === "ArrowRight" ? 16 : -16), true);
+});
 
 // --- Theme: light (EDB Blue Coal, default) or dark, switched by the header button. Only a data-theme attribute on
 // <html> changes, so terminals and polling are untouched; the choice is remembered in this browser.
