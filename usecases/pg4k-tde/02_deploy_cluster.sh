@@ -24,7 +24,7 @@ encrypted and unencrypted PostgreSQL data at rest.
 - EDB registry pull secret available
 - MinIO available
 - manifests/cluster.yaml configured
-- manifests/cluster-no-tde.yaml configured
+- manifests/cluster-tde.yaml configured
 
 ## Expected outcome
 Two PostgreSQL clusters running with identical configurations,

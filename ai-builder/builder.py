@@ -221,8 +221,56 @@ def claude_args(cfg, prompt, draft):
     return args
 
 
-def run_process(args, cwd, timeout, env=None):
-    """Run args (no shell) in its own process group; kill the whole group on timeout. Returns (rc, out, err, timed_out)."""
+def _run_streaming(args, cwd, timeout, env, on_line):
+    """Same contract as run_process, but every stdout line is handed to on_line(line) as it arrives (stream-json). `out` keeps the
+    last result event, or else the last lines. A failing callback never affects the run."""
+    proc = subprocess.Popen(args, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, errors="replace", start_new_session=True,
+                            env={**os.environ, **env} if env else None)
+    keep, errs, result = [], [], []
+
+    def read_out():
+        for line in proc.stdout:
+            line = line.rstrip("\n")
+            if line.startswith('{"type":"result"') or line.startswith('{"type": "result"'):
+                result[:] = [line]
+            else:
+                keep.append(line)
+                del keep[:-50]
+            try:
+                on_line(line)
+            except Exception:
+                pass
+
+    def read_err():
+        for line in proc.stderr:
+            errs.append(line)
+            del errs[:-200]
+
+    threads = [threading.Thread(target=read_out, daemon=True), threading.Thread(target=read_err, daemon=True)]
+    for t in threads:
+        t.start()
+    timed_out = False
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.kill()
+    for t in threads:
+        t.join(10)
+    out = "\n".join(result or keep)
+    return (-9 if timed_out else proc.returncode), out, "".join(errs), timed_out
+
+
+def run_process(args, cwd, timeout, env=None, on_line=None):
+    """Run args (no shell) in its own process group; kill the whole group on timeout. Returns (rc, out, err, timed_out).
+    With on_line, stdout is read incrementally (see _run_streaming)."""
+    if on_line is not None:
+        return _run_streaming(args, cwd, timeout, env, on_line)
     proc = subprocess.Popen(args, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, errors="replace", start_new_session=True,
                             env={**os.environ, **env} if env else None)

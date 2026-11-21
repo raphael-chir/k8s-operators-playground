@@ -111,29 +111,50 @@ class DraftValidation(Base):
 
     def test_scenario_naming_and_numbering(self):
         d = self.draft()
-        shutil.copy(d / "01_demo.sh", d / "Bad Name.sh"); self.assertTrue(any("NN_short_name" in e for e in validator.validate_draft(d, "demo")))
+        full = lambda: validator.validate_draft_full(d, "demo")       # naming and numbering are conventions: warnings, never errors
+        shutil.copy(d / "01_demo.sh", d / "Bad Name.sh"); e, w, _ = full(); self.assertEqual(e, []); self.assertTrue(any("NN_short_name" in x for x in w))
         (d / "Bad Name.sh").unlink(); shutil.copy(d / "01_demo.sh", d / "03_gap.sh")
-        self.assertTrue(any("without gaps" in e for e in validator.validate_draft(d, "demo")))
+        e, w, _ = full(); self.assertEqual(e, []); self.assertTrue(any("without gaps" in x for x in w))
         (d / "03_gap.sh").unlink(); shutil.copy(d / "01_demo.sh", d / "01_dup.sh")
-        self.assertTrue(any("number 01" in e for e in validator.validate_draft(d, "demo")))
+        e, w, _ = full(); self.assertEqual(e, []); self.assertTrue(any("number 01" in x for x in w))
 
     def test_scenario_structure(self):
         d = self.draft(); (d / "01_demo.sh").write_text("#!/bin/sh\necho hi\n")
-        errs = " ".join(validator.validate_draft(d, "demo"))
-        for needle in ("#!/usr/bin/env bash", "set -Eeuo pipefail", "engine/lib/ui.sh", "main"):
-            self.assertIn(needle, errs)
+        errs, warns, info = validator.validate_draft_full(d, "demo"); self.assertEqual(errs, [], "conventions never block")
+        for needle in ("#!/usr/bin/env bash", "set -Eeuo pipefail", "engine/lib/ui.sh", "main", "SCRIPT_DIR"):
+            self.assertIn(needle, " ".join(warns))
+        for helper in ("ui_command", "ui_note", "ui_pause"):                     # optional helpers are information, not warnings
+            self.assertIn(helper, " ".join(info)); self.assertNotIn(helper, " ".join(warns))
+
+    def test_a_placeholder_scenario_is_valid(self):
+        d = self.draft(); (d / "02_fake_scenario.sh").write_text("#!/usr/bin/env bash\nexit 0\n")
+        errs, warns, info = validator.validate_draft_full(d, "demo")
+        self.assertEqual(errs, []); self.assertTrue(any("02_fake_scenario.sh" in i and "ui_command" in i for i in info))
+        self.assertEqual(validator.validate_draft(d, "demo"), [])
 
     def test_manifest_reference_and_syntax(self):
         d = self.draft(); (d / "manifests" / "cluster.yaml").unlink()
         self.assertTrue(any("manifests/cluster.yaml" in e and "does not exist" in e for e in validator.validate_draft(d, "demo")))
         (d / "manifests" / "cluster.yaml").write_text("kind: Cluster\n")
-        self.assertTrue(any("apiVersion" in e for e in validator.validate_draft(d, "demo")))
+        errs, warns, info = validator.validate_draft_full(d, "demo")
+        self.assertFalse(any("apiVersion" in e for e in errs)); self.assertTrue(any("apiVersion" in w for w in warns))
+        (d / "manifests" / "cluster.yaml").write_text("a: [unclosed\n")
+        try:
+            import yaml  # noqa: F401
+            self.assertTrue(any("invalid YAML" in e for e in validator.validate_draft(d, "demo")))
+        except ImportError:
+            pass
 
     def test_symlink_and_unexpected_files(self):
         d = self.draft(); os.symlink("/etc/passwd", d / "link.txt"); (d / "notes.txt").write_text("x"); (d / "manifests" / "sub").mkdir()
         (d / "manifests" / "sub" / "a.yaml").write_text(GOOD_MANIFEST)
-        errs = " ".join(validator.validate_draft(d, "demo"))
-        self.assertIn("symbolic links", errs); self.assertIn("notes.txt", errs); self.assertIn("manifests/sub/a.yaml", errs)
+        errs, warns, info = validator.validate_draft_full(d, "demo")
+        self.assertIn("symbolic links", " ".join(errs))                                   # a symlink blocks
+        self.assertNotIn("notes.txt", " ".join(errs)); self.assertIn("notes.txt", " ".join(warns))      # layout is only a warning
+        self.assertIn("manifests/sub/a.yaml", " ".join(warns))
+
+    def test_the_file_count_limit_matches_the_publisher(self):
+        import publishing; self.assertEqual(validator.MAX_FILES, publishing.MAX_FILES)
 
     def test_repository_snapshot(self):
         (self.root / "a.txt").write_text("1"); before = validator.snapshot(self.root)

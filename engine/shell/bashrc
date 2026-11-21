@@ -21,6 +21,12 @@ HISTCONTROL=ignoredups:erasedups
 shopt -s histappend
 PROMPT_COMMAND='history -a'
 
+# Publishing a Lab from the AI Lab Assistant replaces its directory atomically: a shell that was inside usecases/<lab> would keep the old, deleted
+# directory (empty `ls`). Before each command, if the current directory is no longer the directory the path points to, enter the same path again
+# (same logical path, history and variables untouched). One cheap test per command, no polling; a DEBUG trap runs in this shell, so the cd sticks.
+_refresh_cwd() { [ . -ef "$PWD" ] || { local o="${OLDPWD:-}"; cd -L -- "$PWD" 2>/dev/null; OLDPWD="${o}"; }; return 0; }
+trap '_refresh_cwd' DEBUG
+
 # Completion (scripts for docker, kubectl, helm, kind are generated at image build time
 # into /etc/bash_completion.d; git, etc. come with the bash-completion package).
 [ -r /usr/share/bash-completion/bash_completion ] && . /usr/share/bash-completion/bash_completion

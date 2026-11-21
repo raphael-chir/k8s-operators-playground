@@ -42,7 +42,7 @@ mk() { mkdir -p "${P}/repo/usecases/$1"; printf '%b' "$2" > "${P}/repo/usecases/
 mk crc 'name: crc\ndescription: Connect to an existing cluster\nprovider:\n  type: external\n  name: openshift\n  context: crc-admin\n'
 mk badnoctx 'name: badnoctx\ndescription: d\nprovider:\n  type: external\n  name: openshift\n'
 mk badkindctx 'name: badkindctx\ndescription: d\nprovider:\n  type: external\n  name: openshift\n  context: kind-x-1\n'
-mk badservices 'name: badservices\ndescription: d\nprovider:\n  type: external\n  name: eks\n  context: c1\nservices:\n  minio: true\n'
+mk extras 'name: extras\ndescription: d\nprovider:\n  type: external\n  name: eks\n  context: c1\ninfrastructure:\n  clusters: 2\n  workers_per_cluster: 2\nservices:\n  minio: true\n'
 mk badtype 'name: badtype\ndescription: d\nprovider:\n  type: nope\n  name: x\n  context: c1\ninfrastructure:\n  clusters: 1\n  workers_per_cluster: 1\n'
 mk kindctx 'title: T\ndescription: d\nprovider:\n  type: internal\n  name: kind\n  context: c1\ninfrastructure:\n  clusters: 1\n  workers_per_cluster: 1\n'
 mk futureprov 'title: T\ndescription: d\nprovider:\n  type: internal\n  name: minikube\ninfrastructure:\n  clusters: 1\n  workers_per_cluster: 1\n'
@@ -52,9 +52,10 @@ mk plain 'title: T\ndescription: d\ninfrastructure:\n  clusters: 1\n  workers_pe
 mk wrongname 'name: other\ndescription: d\nprovider:\n  type: external\n  name: eks\n  context: c1\n'
 m() { ( source "${P}/repo/engine/lib/usecase-manifest.sh"; "$@" ); }
 r="$(m usecase_manifest_check crc)"; [ -z "${r}" ] && r=ok || r=bad; check "the minimal external usecase.yaml (name, description, provider) validates: no infrastructure, services or scenarios needed" "$r" "${r}"
-for c in "badnoctx:needs 'provider.context'" "badkindctx:must not be a Kind context" "badservices:'services' is not allowed" "badtype:unknown provider type" "kindctx:only for provider type external" "wrongname:must be the directory name" "futureprov:unsupported internal provider 'minikube'" "noname:'provider.name' is required"; do
+for c in "badnoctx:needs 'provider.context'" "badkindctx:must not be a Kind context" "badtype:unknown provider type" "kindctx:only for provider type external" "wrongname:must be the directory name" "futureprov:unsupported internal provider 'minikube'" "noname:'provider.name' is required"; do
   out="$(m usecase_manifest_check "${c%%:*}")"; grep -q -- "${c#*:}" <<< "${out}" && r=ok || r=bad; check "usecase.yaml refused: ${c%%:*} (${c#*:})" "$r" "${out}"
 done
+r="$(m usecase_manifest_check extras)"; [ -z "${r}" ] && [ -z "$(m usecase_services extras)" ] && r=ok || r=bad; check "an external manifest with infrastructure and services validates and both are ignored (no services enabled)" "$r" "${r}"
 [ "$(m usecase_provider plain)" = kind ] && [ "$(m usecase_provider crc)" = external ] && [ "$(m usecase_provider eks)" = external ] && [ "$(m usecase_provider_name eks)" = eks ] && [ "$(m usecase_provider_type crc)" = external ] && r=ok || r=bad
 check "resolution: no provider section = internal/kind; external + openshift or eks = the external implementation (name identifies the platform)" "$r" "$(m usecase_provider plain) $(m usecase_provider crc) $(m usecase_provider eks)"
 out="$(PLAYGROUND_PROVIDER=$(m usecase_provider futureprov) bash -c "cd ${P}/repo && source engine/lib/provider.sh" 2>&1)"

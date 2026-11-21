@@ -47,6 +47,7 @@ PLATFORM_SERVICE_KEYS="cert_manager minio prometheus grafana"
 # Prints the services the manifest enables, comma separated, in installation order (e.g. cert_manager,minio,grafana).
 usecase_services() {
   local key list=""
+  [ "$(usecase_provider_type "$1")" != external ] || return 0   # not applicable to an external cluster: ignored
   for key in ${PLATFORM_SERVICE_KEYS}; do
     [ "$(usecase_config "$1" "services.${key}")" != true ] || list="${list:+${list},}${key}"
   done
@@ -73,13 +74,13 @@ usecase_manifest_check() {
     internal)
       [ -z "$(usecase_config "${name}" provider.context)" ] || { echo "usecases/${name}/usecase.yaml: 'provider.context' is only for provider type external"; return 1; }
       [ "${pname}" != external ] && [ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/providers/${pname}/provider.sh" ] ||
-        { echo "usecases/${name}/usecase.yaml: unsupported internal provider '${pname}' (available: kind)"; return 1; } ;;
+        { echo "usecases/${name}/usecase.yaml: unsupported internal provider '${pname}' (available: kind, k3d)"; return 1; } ;;
     external)
       value="$(usecase_config "${name}" provider.context)"
       [[ "${value}" =~ ^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$ ]] || { echo "usecases/${name}/usecase.yaml: provider type external needs 'provider.context' (a kubeconfig context name)"; return 1; }
       case "${value}" in kind-*) echo "usecases/${name}/usecase.yaml: 'provider.context' must not be a Kind context (${value})"; return 1 ;; esac
-      # An external cluster is user-managed: no stacks are installed on it, so a services section is refused (never silently ignored).
-      grep -qE '^services:' "${file}" && { echo "usecases/${name}/usecase.yaml: 'services' is not allowed with provider type external (no stacks are installed on an external cluster)"; return 1; } ;;
+      # infrastructure and services do not apply to an external cluster: ignored if present, not validated.
+      return 0 ;;
     *) echo "usecases/${name}/usecase.yaml: unknown provider type '${type}' (expected: internal, external)"; return 1 ;;
   esac
   if [ "${type}" = internal ]; then

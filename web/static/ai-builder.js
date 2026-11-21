@@ -127,9 +127,15 @@ const AIBCore = {
   },
   turnDetails(turn) {
     const u = (turn && turn.usage) || {};
+    const tm = turn && turn.timing, extra = [];
+    if (tm) {                                                                  // streaming figures (absent on turns recorded before streaming)
+      const sec = v => typeof v === "number" ? v + " s" : "n/a";
+      extra.push(["First output", sec(tm.first_output_s)], ["CLI startup", sec(tm.cli_startup_s)], ["Tool calls", String(tm.tool_calls || 0)]);
+      for (const t of (tm.tools || []).slice(0, 12)) extra.push(["· " + t.name, (t.detail ? t.detail + " · " : "") + sec(t.seconds)]);
+    }
     return [["Model", (turn && turn.model) || "n/a"], ["Input tokens", AIBCore.num(u.input_tokens)], ["Output tokens", AIBCore.num(u.output_tokens)],
       ["Cache read tokens", AIBCore.num(u.cache_read_input_tokens)], ["Cache creation tokens", AIBCore.num(u.cache_creation_input_tokens)],
-      ["Estimated cost", AIBCore.money(turn ? turn.cost_usd : null)], ["Duration", turn && typeof turn.seconds === "number" ? turn.seconds + " s" : "n/a"]];
+      ["Estimated cost", AIBCore.money(turn ? turn.cost_usd : null)], ["Duration", turn && typeof turn.seconds === "number" ? turn.seconds + " s" : "n/a"], ...extra];
   },
   // What the conversation is doing to its Lab, from backend state only: editing (an edit message is running), unpublished changes
   // (the working copy differs from the published Lab), otherwise read-only. No Lab: no state.
@@ -183,6 +189,7 @@ const AIBCore = {
     if (sending) return { kind: "busy", busy: true, text: "Sending your message…" };
     if (conv && AIBCore.convBusy(conv)) {
       const p = conv.pending || {}, since = p.started ? AIBCore.elapsed(p.started, now) : "";
+      if (p.live && p.live.tool) return { kind: "busy", busy: true, text: `${p.live.tool}…` + (since ? ` · ${since}` : "") };     // what Claude is doing right now
       return { kind: "busy", busy: true, text: (p.edit ? "Claude is working on your request (editing is enabled for this message)" : "Claude is thinking") + (since ? ` · ${since}` : "") + "…" };
     }
     const last = conv && conv.messages && conv.messages[conv.messages.length - 1];
@@ -414,7 +421,7 @@ if (typeof document !== "undefined") (function () {
 
   // --- Conversations: read-only chats with Claude Code. The server keeps the conversation and Claude's own session;
   // this tab only lists, opens, sends a message and follows the reply. Replies, titles and errors go in through textContent.
-  const C = { list: [], conv: null, pollToken: 0, sending: false, creating: false, stick: true, sig: "", shown: 0, forceScroll: false, filesCollapsed: false,
+  const C = { list: [], conv: null, pollToken: 0, sending: false, creating: false, stick: true, sig: "", shown: 0, forceScroll: false, filesCollapsed: true, diffOpen: false, crOpen: {},
     review: null, reviewOpen: false, revFile: null, ops: { review: false, undo: false, reset: false, discard: false, publish: false, remove: false }, confirm: { reset: false, discard: false, del: false },
     revLab: null, hist: false, query: "", showArchived: false, menu: null, renaming: null, confirmDel: null, delInfo: null, dismissed: {} };
   const convStore = {
@@ -582,16 +589,24 @@ if (typeof document !== "undefined") (function () {
     $("aib-cr-files").replaceChildren(...r.diff.map(f => {
       const li = document.createElement("li"), b = document.createElement("button");
       b.type = "button"; b.className = (f.path === C.revFile ? "active " : "") + "chg-" + f.change; b.textContent = `${AIBCore.changeTag(f.change)} ${f.path}`;
-      b.onclick = () => { C.revFile = f.path; renderChangeReview(); };
+      b.onclick = () => { C.diffOpen = f.path === C.revFile ? !C.diffOpen : true; C.revFile = f.path; renderChangeReview(); };   // a second click on the open file hides its diff
       li.appendChild(b); return li;
     }));
     show($("aib-cr-files"), !C.filesCollapsed);
-    $("aib-cr-files-toggle").textContent = `Files (${r.diff.length})`;
+    show($("aib-cr-diff"), !C.filesCollapsed && C.diffOpen);
+    $("aib-cr-files-toggle").textContent = `${C.filesCollapsed ? "▸" : "▾"} Files changed (${r.diff.length})`;
     $("aib-cr-files-toggle").setAttribute("aria-expanded", String(!C.filesCollapsed));
     $("aib-cr-diff").replaceChildren(...diffNodes(sel));
-    $("aib-cr-validation").className = "aib-validation " + (r.validation.passed ? "ok" : "bad");
-    $("aib-cr-validation").textContent = r.validation.passed ? "✓ Validation passed: the Lab is structurally valid." : "✕ Validation failed: fix these problems before publishing.";
-    setList($("aib-cr-errors"), r.validation.passed ? [] : r.validation.errors);
+    const v = r.validation, errs = v.passed ? [] : v.errors || [], warns = v.warnings || [], infos = v.info || [], n = (k, w) => `${k} ${w}${k === 1 ? "" : "s"}`;
+    $("aib-cr-validation").className = "aib-validation " + (v.passed ? "ok" : "bad");
+    $("aib-cr-validation").textContent = `${v.passed ? "✓ Ready to publish" : "✕ Cannot publish"} · ${n(errs.length, "error")} · ${n(warns.length, "warning")} · ${infos.length} info`;
+    // Errors open by themselves; warnings and information stay folded until asked for (none of them, bar the errors, ever blocks Publish).
+    for (const [key, items, label] of [["errors", errs, "ERROR"], ["warnings", warns, "WARNING"], ["info", infos, "INFO"]]) {
+      const open = items.length > 0 && (C.crOpen[key] !== undefined ? C.crOpen[key] : key === "errors"), t = $(`aib-cr-${key}-toggle`);
+      setList($(`aib-cr-${key}`), items); show($(`aib-cr-${key}`), open);
+      show(t, items.length > 0); t.textContent = `${open ? "▾" : "▸"} ${label} (${items.length})` + (open ? "" : ` — ${String(items[0] || "").replace(/^[^:]+: /, "").slice(0, 70)}`);
+      t.setAttribute("aria-expanded", String(open));
+    }
     $("aib-cr-confirm-text").textContent = `I reviewed these changes and approve publishing them to usecases/${r.lab}.`;
     $("aib-cr-note").textContent = r.conflict ? "The published Lab changed: use “Start over from the published Lab”." : !r.total ? "Nothing to publish." : "";
     $("aib-cr-publish").disabled = !AIBCore.canPublishChanges({ review: r, confirmed: $("aib-cr-confirm").checked, busy: C.ops.publish });
@@ -606,7 +621,7 @@ if (typeof document !== "undefined") (function () {
       const lp = labPath("review", curWs(C.conv));
       const r = await call(lp.method, lp.path, lp.body, 45000);
       if (!r.ok) { convError(AIBCore.formatError(r)); return; }
-      C.review = r.data; C.reviewOpen = true; C.revFile = null; $("aib-cr-confirm").checked = false; convError("");
+      C.review = r.data; C.reviewOpen = true; C.revFile = null; C.diffOpen = false; C.filesCollapsed = true; C.crOpen = {}; $("aib-cr-confirm").checked = false; convError("");
     } catch (_) { convError("The review did not complete. Try again."); }
     finally { C.ops.review = false; renderChat(); }
   }
@@ -689,7 +704,7 @@ if (typeof document !== "undefined") (function () {
     const id = C.conv && C.conv.id;
     let failures = 0;
     while (token === C.pollToken && S.panelOpen && C.conv && C.conv.id === id && AIBCore.convBusy(C.conv)) {
-      await new Promise(res => setTimeout(res, Math.min(2000 * (failures + 1), 10000)));
+      await new Promise(res => setTimeout(res, failures ? Math.min(2000 * (failures + 1), 10000) : 700));   // fast while a reply streams
       if (token !== C.pollToken || !S.panelOpen) return;
       try {
         const r = await call("GET", `/conversations/${encodeURIComponent(id)}`, undefined, 20000);
@@ -824,7 +839,7 @@ if (typeof document !== "undefined") (function () {
     const last = conv.messages[conv.messages.length - 1];
     const sig = [conv.id, conv.messages.length, last ? last.status + (last.finished || "") : "", conv.pending ? conv.pending.user : "", conv.edit_approved ? "a" : "", conv.lab_active === false ? "i" : "", last && C.dismissed[`${conv.id}:${last.n}`] ? "d" : "", conv.delete_request ? `x:${conv.delete_request.lab}:${conv.delete_request.state}` : ""].join("|");
     const box = $("aib-conv-messages");
-    if (sig === C.sig) return;
+    if (sig === C.sig) { updateLive(conv, box); return; }                      // same list: only the streaming bubble can have changed
     const sameConv = C.sigConv === conv.id;
     const stick = C.forceScroll || !sameConv || C.stick, top = box.scrollTop;
     const nodes = [];
@@ -836,12 +851,28 @@ if (typeof document !== "undefined") (function () {
     if (last && !conv.pending && !C.dismissed[`${conv.id}:${last.n}`]
       && ((last.edit_request && !conv.edit_approved && conv.lab && conv.lab_active !== false) || last.create_request)) nodes.push(approvalCard(conv, last));
     if (last && !conv.pending && conv.delete_request && conv.delete_request.state === "ready") nodes.push(deleteCard(conv, conv.delete_request));
-    if (conv.pending) { nodes.push(bubble("user", conv.pending.user)); nodes.push(bubble("assistant pending", conv.pending.edit ? "Working on your request…" : "Thinking…")); }
+    C.liveEl = null; C.liveKey = null;
+    if (conv.pending) { nodes.push(bubble("user", conv.pending.user)); C.liveEl = bubble("assistant pending", conv.pending.edit ? "Working on your request…" : "Thinking…"); nodes.push(C.liveEl); }
     box.replaceChildren(...nodes);
+    updateLive(conv, box, true);
     C.sig = sig; C.sigConv = conv.id;
     if (stick) { box.scrollTop = box.scrollHeight; C.stick = true; show($("aib-scroll-bottom"), false); }
     else { box.scrollTop = top; if (nodes.length > C.shown) show($("aib-scroll-bottom"), true); }   // new content below what you are reading
     C.shown = nodes.length; C.forceScroll = false;
+  }
+  // The partial reply and the current tool of the running turn (conv.pending.live, temporary): only this bubble is updated, in place, so the rest
+  // of the list keeps its selection and nothing is duplicated; the saved turn replaces it when the final result arrives.
+  function updateLive(conv, box, rebuilt) {
+    const lv = conv.pending && conv.pending.live, d = C.liveEl;
+    if (!d || !d.isConnected) return;
+    const text = lv && lv.text ? lv.text : "", key = text + "|" + (lv && lv.tool || "");
+    if (key === C.liveKey) return;
+    C.liveKey = key;
+    const idle = conv.pending.edit ? "Working on your request…" : "Thinking…";
+    d.className = "aib-msg assistant " + (text ? "live" : "pending");
+    if (text && typeof AIBMarkdown !== "undefined") d.replaceChildren(AIBMarkdown.render(text, document, { copy: copyCode }));
+    else d.textContent = text || (lv && lv.tool ? lv.tool + "…" : idle);
+    if (!rebuilt && C.stick) { box.scrollTop = box.scrollHeight; }
   }
   // --- inline approval of edits (P3.1d): shown under Claude's reply when it proposed changes; the backend enables nothing before this click ---
   async function approveEdit(labs) {                                            // `labs`: every Lab the card named (several Labs in focus), else the Lab in focus
@@ -1001,6 +1032,7 @@ if (typeof document !== "undefined") (function () {
   $("aib-conv-messages").onscroll = () => { const box = $("aib-conv-messages"); C.stick = AIBCore.isNearBottom(box); if (C.stick) show($("aib-scroll-bottom"), false); };
   $("aib-scroll-bottom").onclick = () => { const box = $("aib-conv-messages"); box.scrollTop = box.scrollHeight; C.stick = true; show($("aib-scroll-bottom"), false); focusEl($("aib-conv-input")); };
   $("aib-cr-files-toggle").onclick = () => { C.filesCollapsed = !C.filesCollapsed; renderChangeReview(); };
+  for (const key of ["errors", "warnings", "info"]) $(`aib-cr-${key}-toggle`).onclick = () => { const l = (C.review && C.review.validation[key === "errors" ? "errors" : key]) || []; if (l.length) { const was = C.crOpen[key] !== undefined ? C.crOpen[key] : key === "errors"; C.crOpen[key] = !was; renderChangeReview(); } };
   $("aib-changes-review").onclick = openChangeReview;
   $("aib-changes-undo").onclick = () => changeAction("undo");
   $("aib-changes-reset").onclick = () => confirmThen("reset");

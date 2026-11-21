@@ -110,7 +110,7 @@ def system_prompt(lab=None):
             "\"propose without applying\" are answers: give them in your reply, for one Lab or several.\n"
             f"Skill: when you analyze, create or modify a Lab, read {builder.SKILL_PATH} once (the authority on the Playground's Lab conventions: "
             "usecase.yaml, README.md, NN_name.sh scenarios at the root, manifests/; its output-location rule is overridden by the working copy "
-            "named in the note) and follow it.\n"
+            "named in the note) and follow it. When editing an existing Lab, keep its usecase.yaml unchanged (above all its provider section) unless the user explicitly asks for a manifest change; never add infrastructure or services to an external Lab. Scenario structure and the ui_note/ui_command/ui_pause helpers are recommended conventions, not requirements: placeholder or incomplete scenarios are allowed, and do not edit files only to satisfy an optional convention.\n"
             "Directives: to act on the context or to ask for approval, end the reply with a final block of lines, each alone on its own line, "
             "with nothing after them:\n"
             "[[context: focus LAB]] (only that Lab), [[context: add LAB]] (also read that Lab, read-only), [[context: detach LAB]] (remove it; "
@@ -207,11 +207,99 @@ def conversation_args(cfg, message, session_id, resume, lab, call_budget_usd, wo
     message = message.strip()
     if message.startswith("-"):
         message = " " + message                          # an argument that starts with '-' could be parsed as an option
-    return [cfg.claude, "-p", "--output-format", "json", "--model", cfg.model, "--max-budget-usd", f"{call_budget_usd:g}",
+    return [cfg.claude, "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--model", cfg.model, "--max-budget-usd", f"{call_budget_usd:g}",
             "--permission-mode=dontAsk", f"--tools={tools[0]}", f"--allowedTools={tools[1]}",
             "--disallowedTools=" + ",".join(deny), "--strict-mcp-config", *mcp, *extra,
             "--append-system-prompt", system_prompt(lab),
             "--resume" if resume else "--session-id", session_id, message]
+
+
+# --- live progress of a running turn (stream-json) -----------------------------------------------------------------------------
+# Temporary, in memory only, never saved in the conversation: the final `result` event stays the one source for the reply, usage, cost
+# and workspace changes. It feeds the pending record's `live` part in the conversation view and the per-turn `timing` figures.
+_DIRECTIVE_TAIL_RE = re.compile(r"(^|\n)[ \t`*_]*\[\[.*\Z", re.S)        # a trailing [[context: ...]] block (also half written) is never shown
+MAX_LIVE_TEXT = 8000
+MAX_TIMED_TOOLS = 50
+
+
+def tool_label(name, args):
+    """A short human line for a tool call ("Reading usecase.yaml"). Only file names, patterns and hosts: never contents."""
+    a = args if isinstance(args, dict) else {}
+    base = lambda v: os.path.basename(str(v).rstrip("/"))[:60] if v else ""
+    if name == "Read":
+        return "Reading " + (base(a.get("file_path")) or "a file"), base(a.get("file_path"))
+    if name in ("Glob", "Grep"):
+        return "Searching files", str(a.get("pattern") or "")[:60]
+    if name == "WebSearch":
+        return "Searching the web", str(a.get("query") or "")[:60]
+    if name == "WebFetch":
+        host = re.sub(r"^[a-z]+://", "", str(a.get("url") or "")).split("/")[0][:60]
+        return "Fetching " + (host or "a page"), host
+    if name in ("Write", "Edit"):
+        return ("Writing " if name == "Write" else "Editing ") + (base(a.get("file_path")) or "a file"), base(a.get("file_path"))
+    if name == "mcp__labfs__delete_file":
+        return "Deleting " + (base(a.get("path")) or "a file"), base(a.get("path"))
+    return "Using " + str(name)[:40], ""
+
+
+class LiveTurn:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.t0 = time.time()
+        self.text, self.init_s, self.first_s, self.tools, self.open = "", None, None, [], {}
+
+    def _since(self):
+        return round(time.time() - self.t0, 2)
+
+    def feed(self, line):
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            return
+        if not isinstance(ev, dict):
+            return
+        kind = ev.get("type")
+        with self.lock:
+            if kind == "system" and ev.get("subtype") == "init" and self.init_s is None:
+                self.init_s = self._since()
+            elif kind == "stream_event" and isinstance(ev.get("event"), dict):
+                e = ev["event"]
+                if e.get("type") == "message_start":
+                    self.text = ""                                  # a new assistant message: only the latest one is shown
+                elif e.get("type") == "content_block_delta" and isinstance(e.get("delta"), dict) and e["delta"].get("type") == "text_delta":
+                    self.text = (self.text + str(e["delta"].get("text") or ""))[-MAX_LIVE_TEXT * 4:]
+                    if self.first_s is None:
+                        self.first_s = self._since()
+            elif kind == "assistant" and isinstance(ev.get("message"), dict):
+                for b in ev["message"].get("content") or []:
+                    if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id") not in self.open:
+                        label, detail = tool_label(b.get("name"), b.get("input"))
+                        tool = {"name": str(b.get("name"))[:60], "label": label, "detail": detail, "t": time.time(), "seconds": None}
+                        self.open[b.get("id")] = tool
+                        self.tools.append(tool)
+                        if self.first_s is None:
+                            self.first_s = self._since()
+            elif kind == "user" and isinstance(ev.get("message"), dict) and isinstance(ev["message"].get("content"), list):
+                for b in ev["message"]["content"]:
+                    tool = self.open.get(b.get("tool_use_id")) if isinstance(b, dict) and b.get("type") == "tool_result" else None
+                    if tool and tool["seconds"] is None:
+                        tool["seconds"] = round(time.time() - tool["t"], 2)
+
+    def snapshot(self):
+        """What the conversation view shows while the turn runs (never persisted)."""
+        with self.lock:
+            text = _DIRECTIVE_TAIL_RE.sub("", self.text).strip()
+            running = [t for t in self.tools if t["seconds"] is None]
+            return {"text": text[-MAX_LIVE_TEXT:], "tool": running[-1]["label"] if running else None, "tool_calls": len(self.tools),
+                    "first_output_s": self.first_s}
+
+    def timing(self):
+        """The per-turn observability figures stored with the finished turn (None when the CLI streamed nothing)."""
+        with self.lock:
+            if self.init_s is None and self.first_s is None and not self.tools:
+                return None
+            return {"cli_startup_s": self.init_s, "first_output_s": self.first_s, "tool_calls": len(self.tools),
+                    "tools": [{"name": t["name"], "detail": t["detail"], "seconds": t["seconds"]} for t in self.tools[:MAX_TIMED_TOOLS]]}
 
 
 def _round(x):
@@ -222,6 +310,7 @@ class ConversationManager:
     def __init__(self, cfg, runner=builder.run_process, other_busy=lambda: False, jobs_busy=lambda: False):
         self.cfg, self.runner, self.other_busy, self.jobs_busy = cfg, runner, other_busy, jobs_busy
         self.lock = threading.Lock()
+        self._live = {}                                    # conversation id -> LiveTurn while its turn runs (in memory only, never persisted)
         self._publishing = {}                              # Lab name -> conversation id, while the publisher runs (in memory: a restart clears it)
         self.convs = {}
         self.dir = cfg.state / "conversations"
@@ -304,7 +393,7 @@ class ConversationManager:
     def _view(self, conv):
         out = self._summary(conv)
         pending = conv.get("pending")
-        out.update(model=self.cfg.model, messages=[dict(t) for t in conv["turns"]], pending=dict(pending) if pending else None,
+        out.update(model=self.cfg.model, messages=[dict(t) for t in conv["turns"]], pending=self._pending_view(conv, pending),
                    usage=self._usage(conv), budget=self._budget(conv), context=self._context(conv),
                    limits={"max_budget_usd_per_call": self.cfg.max_budget_usd, "timeout_seconds": self.cfg.timeout, "max_message_chars": MAX_MESSAGE,
                            "max_turns": MAX_TURNS},
@@ -312,6 +401,15 @@ class ConversationManager:
                    lab_active=conv.get("lab_active", True), edit_approved=self._edit_on(conv),
                    labs=([{"name": conv["lab"], "active": conv.get("lab_active", True)}] + [{"name": o, "active": True, "read_only": True} for o in conv.get("labs", [])]) if conv["lab"] else [], workspace=self._workspace_view(conv), workspaces=self._workspaces_view(conv), delete_request=self._delete_view(conv),
                    cost_basis="api_equivalent_estimate")
+        return out
+
+    def _pending_view(self, conv, pending):
+        if not pending:
+            return None
+        out = dict(pending)
+        live = self._live.get(conv["id"])
+        if live is not None:
+            out["live"] = live.snapshot()                  # temporary progress: replaced by the saved turn when the final result arrives
         return out
 
     # --- Lab context (P3.1b): one Lab per conversation for now; `labs` in the view is a list so P3.2 can hold several ---------------
@@ -929,10 +1027,10 @@ class ConversationManager:
                 info, ch, diffs, digest = ws.info(), ws.changes(), ws.diff(), ws.tree_hash()
             except (OSError, ValueError, KeyError, wsmod.WorkspaceError):
                 raise builder.RequestError(["the working copy is damaged: reset it or start over from the published Lab"], 409)
-            errors = validator.validate_draft(ws.work, lab)
+            errors, warnings, notes = validator.validate_draft_full(ws.work, lab)     # warnings are conventions: they never disable Publish
             total = len(ch["added"]) + len(ch["modified"]) + len(ch["deleted"])
             conflict = self._conflict(conv, info, lab)
-            return {"lab": lab, "changes": ch, "total": total, "diff": diffs, "validation": {"passed": not errors, "errors": errors},
+            return {"lab": lab, "changes": ch, "total": total, "diff": diffs, "validation": {"passed": not errors, "errors": errors, "warnings": warnings, "info": notes},
                     "tree_hash": digest, "conflict": conflict, "can_undo": info["can_undo"],
                     "can_publish": total > 0 and not errors and not conflict}
 
@@ -1052,12 +1150,15 @@ class ConversationManager:
                 ws_map[t].begin_turn(n)                             # remember the state to undo to (only new contents are stored)
                 befores[t] = ws_map[t].manifest()
             workspace_error = None
+            live = LiveTurn()
+            self._live[cid] = live
             try:
                 args = conversation_args(self.cfg, (UPDATE_NOTE if stale else "") + (notice + "\n" if notice else "") + turn_note(lab, work, bool(targets), True, skill, released, bool(conv.get("new_lab")), others,
                                                                                                  works if multi else None, targets) + message, sid, resume, lab, call_budget,
                                          work=list(works.values()) if multi else work, editing=[works[t] for t in targets] if multi else bool(targets), released=denied,
                                          delete_labs={t: works[t] for t in targets})
-                rc, out, err, timed_out = self.runner(args, str(self.cfg.root), self.cfg.timeout, CLAUDE_ENV)
+                kw = {"on_line": live.feed} if self.runner is builder.run_process else {}      # injected runners (tests) keep the plain contract
+                rc, out, err, timed_out = self.runner(args, str(self.cfg.root), self.cfg.timeout, CLAUDE_ENV, **kw)
             except FileNotFoundError:
                 rc, out, err, timed_out = 127, "", "Claude Code CLI not found", False
             except RuntimeError as exc:
@@ -1095,6 +1196,9 @@ class ConversationManager:
                     "model": self.cfg.model, "resumed": resume, "max_budget_usd": call_budget, "usage": usage,
                     "cost_usd": _round(cost), "cli_total_cost_usd": cli_total, "context_tokens": context,
                     "edit": bool(befores), "changed": changed[:50]}
+            timing = live.timing()
+            if timing:
+                turn["timing"] = {**timing, "total_s": turn["seconds"]}
             with self.lock:
                 conv = self.convs[cid]
                 if skill and error is None:
@@ -1177,3 +1281,5 @@ class ConversationManager:
                     conv.pop("pending", None)
                     conv["status"] = "idle"
                     self._save(conv)
+        finally:
+            self._live.pop(cid, None)

@@ -123,7 +123,7 @@ class Sessions(Base):
         m = self.manager(); cid = m.create()["id"]; self.say(m, cid)
         args, cwd, timeout, env = self.calls[0]
         self.assertEqual((cwd, timeout, env), (str(self.root), 900, {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}))
-        self.assertEqual((arg_after(args, "--output-format"), arg_after(args, "--model")), ("json", "sonnet"))
+        self.assertEqual((arg_after(args, "--output-format"), arg_after(args, "--model")), ("stream-json", "sonnet"))
         self.assertNotIn("--no-session-persistence", args)
 
     def test_sessions_survive_a_service_restart(self):

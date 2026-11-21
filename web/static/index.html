@@ -128,13 +128,16 @@
               <p id="aib-changes-conflict" class="aib-banner" hidden>The published Lab changed after this working copy was made, so these changes cannot be published as they are.
                 <button id="aib-changes-discard" type="button" class="small">Start over from the published Lab</button></p>
               <section id="aib-cr" class="aib-cr" hidden aria-label="Review of the changes">
-                <div class="aib-cr-top">
-                  <span id="aib-cr-validation" class="aib-validation"></span>
-                  <button id="aib-cr-files-toggle" type="button" class="small" aria-expanded="true" aria-controls="aib-cr-files">Files</button>
-                </div>
-                <ul id="aib-cr-errors" class="aib-errors" hidden></ul>
-                <ul id="aib-cr-files" class="aib-cr-files" aria-label="Changed files"></ul>
-                <pre id="aib-cr-diff" class="aib-diff" tabindex="0" aria-label="Changes of the selected file"></pre>
+                <p id="aib-cr-validation" class="aib-validation"></p>
+                <button id="aib-cr-errors-toggle" type="button" class="aib-cr-sec err" aria-expanded="true" aria-controls="aib-cr-errors" hidden></button>
+                <ul id="aib-cr-errors" class="aib-cr-list err" hidden></ul>
+                <button id="aib-cr-warnings-toggle" type="button" class="aib-cr-sec warn" aria-expanded="false" aria-controls="aib-cr-warnings" hidden></button>
+                <ul id="aib-cr-warnings" class="aib-cr-list warn" hidden aria-label="Warnings (do not block publishing)"></ul>
+                <button id="aib-cr-info-toggle" type="button" class="aib-cr-sec info" aria-expanded="false" aria-controls="aib-cr-info" hidden></button>
+                <ul id="aib-cr-info" class="aib-cr-list info" hidden aria-label="Information (does not block publishing)"></ul>
+                <button id="aib-cr-files-toggle" type="button" class="aib-cr-sec" aria-expanded="false" aria-controls="aib-cr-files">Files</button>
+                <ul id="aib-cr-files" class="aib-cr-files" aria-label="Changed files" hidden></ul>
+                <pre id="aib-cr-diff" class="aib-diff" tabindex="0" aria-label="Changes of the selected file" hidden></pre>
                 <label class="aib-confirm" for="aib-cr-confirm"><input id="aib-cr-confirm" type="checkbox"><span id="aib-cr-confirm-text"></span></label>
                 <div class="aib-actions"><span id="aib-cr-note" class="aib-hint"></span>
                   <button id="aib-cr-publish" type="button" class="primary small" disabled>Publish</button></div>

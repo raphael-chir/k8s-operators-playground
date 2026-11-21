@@ -367,7 +367,7 @@ class EditingPermissions(Base):
         m = self.manager(); cid = self.lab_conv(m)
         self.say(m, cid, "What does scenario 01 do?")
         args = self.calls[0]
-        self.assertEqual(arg_after(args, "--output-format"), "json")
+        self.assertEqual(arg_after(args, "--output-format"), "stream-json")
         self.assertEqual(next(a for a in args if a.startswith("--tools=")), "--tools=Read,Glob,Grep,WebSearch,WebFetch")
         self.assertEqual(next(a for a in args if a.startswith("--allowedTools=")), "--allowedTools=WebSearch,WebFetch", "no bare Read/Glob/Grep allow rule: reads are limited to the repository and this conversation's own working copies")
         deny = next(a for a in args if a.startswith("--disallowedTools=")).split("=", 1)[1].split(",")
@@ -446,8 +446,16 @@ class EditingWorkflow(Base):
         self.edit(m, cid, fn=lambda w: ((w / "README.md").write_text("# New\n"), (w / "02_extra.sh").write_text((w / "01_demo.sh").read_text()), (w / "manifests" / "extra.yaml").unlink()))
         r = m.review(cid)
         self.assertEqual((r["changes"]["modified"], r["changes"]["added"], r["changes"]["deleted"], r["total"]), (["README.md"], ["02_extra.sh"], ["manifests/extra.yaml"], 3))
-        self.assertTrue(any("+# New" in d["diff"] for d in r["diff"])); self.assertEqual(r["validation"], {"passed": True, "errors": []})
+        self.assertTrue(any("+# New" in d["diff"] for d in r["diff"])); self.assertEqual((r["validation"]["passed"], r["validation"]["errors"]), (True, []))
         self.assertEqual((r["conflict"], r["can_publish"], r["lab"]), (False, True, LAB)); self.assertEqual(r["tree_hash"], publishing.tree_hash(self.cfg.state / "workspaces" / cid / "work"))
+
+    def test_warnings_are_reported_and_never_block_publishing(self):
+        m = self.manager(); cid = self.lab_conv(m)
+        self.edit(m, cid, fn=lambda w: (w / "02_fake_scenario.sh").write_text("#!/usr/bin/env bash\nexit 0\n"))
+        r = m.review(cid)
+        self.assertEqual((r["validation"]["passed"], r["validation"]["errors"], r["can_publish"]), (True, [], True))
+        self.assertTrue(any("02_fake_scenario.sh" in i and "ui_command" in i for i in r["validation"]["info"]))
+        m.publish(cid, True, r["tree_hash"]); self.assertTrue((self.root / "usecases" / LAB / "02_fake_scenario.sh").is_file())
 
     def test_an_invalid_result_is_reported_and_cannot_be_published(self):
         m = self.manager(); cid = self.lab_conv(m)
@@ -1516,9 +1524,15 @@ class FileDeletion(Base):
         self.assertEqual(out["changes"]["deleted"], 2); self.assertEqual(self.tree(self.root / "usecases" / "cnpg-standard"), other, "no other Lab is touched")
         self.assertEqual(self.tree(pub), self.tree(self.cfg.state / "workspaces" / cid / "work"), "the published Lab IS the validated tree")
 
-    def test_an_invalid_resulting_lab_cannot_be_published(self):
+    def test_the_readme_is_optional_and_can_be_deleted_and_published(self):
         m, cid = self.conv(); self.edit(m, cid, self.drop("README.md")); r = m.review(cid)
-        self.assertFalse(r["validation"]["passed"]); self.assertTrue(any("README" in e for e in r["validation"]["errors"])); before = self.tree(self.root / "usecases" / LAB)
+        self.assertTrue(r["validation"]["passed"], r["validation"]["errors"])
+        m.publish(cid, True, r["tree_hash"]); self.assertFalse((self.root / "usecases" / LAB / "README.md").exists())
+        self.assertTrue((self.root / "usecases" / LAB / "usecase.yaml").exists())
+
+    def test_an_invalid_resulting_lab_cannot_be_published(self):
+        m, cid = self.conv(); self.edit(m, cid, self.drop("manifests/cluster.yaml")); r = m.review(cid)
+        self.assertFalse(r["validation"]["passed"]); self.assertTrue(any("manifests/cluster.yaml" in e for e in r["validation"]["errors"])); before = self.tree(self.root / "usecases" / LAB)
         with self.assertRaises(builder.RequestError) as e: m.publish(cid, True, r["tree_hash"])
         self.assertEqual(e.exception.status, 409); self.assertEqual(self.tree(self.root / "usecases" / LAB), before)
 

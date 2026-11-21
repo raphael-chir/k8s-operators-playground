@@ -590,7 +590,7 @@ test("Review changes lists the files with their change, shows the colored diff a
   await h.click("aib-changes-review");
   assert.strictEqual(h.fetches.filter(f => f.url === `${U}/review`).length, 1); assert.strictEqual(h.$("aib-cr").hidden, false);
   assert.deepStrictEqual(h.$("aib-cr-files").children.map(li => li.children[0].textContent), ["~ README.md", "+ 02_new.sh"]);
-  assert.deepStrictEqual(spanClasses(h), ["aib-dl meta", "aib-dl meta", "aib-dl hunk", "aib-dl del", "aib-dl add"]); assert.match(h.text("aib-cr-validation"), /Validation passed/);
+  assert.deepStrictEqual(spanClasses(h), ["aib-dl meta", "aib-dl meta", "aib-dl hunk", "aib-dl del", "aib-dl add"]); assert.match(h.text("aib-cr-validation"), /^✓ Ready to publish · 0 errors · 0 warnings · 0 info$/);
   assert.match(h.text("aib-cr-confirm-text"), /approve publishing them to usecases\/cnpg-standard/);
   assert.strictEqual(h.$("aib-cr-publish").disabled, true, "needs the explicit approval");
   h.$("aib-cr-files").children[1].children[0].onclick(); assert.match(h.$("aib-cr-diff").children.map(textOf).join(""), /\+echo hi/);
@@ -600,7 +600,7 @@ test("Review changes lists the files with their change, shows the colored diff a
 test("a failed validation or a conflict keeps Publish disabled even when approved", async () => {
   const bad = { conv: convView({ workspace: WS(), can_edit: true }), review: REVIEW({ can_publish: false, validation: { passed: false, errors: ["a scenario references manifests/x.yaml, which does not exist in the draft"] } }) };
   const h = await editChat(bad); await h.click("aib-changes-review");
-  assert.match(h.text("aib-cr-validation"), /Validation failed/); assert.deepStrictEqual(h.$("aib-cr-errors").children.map(li => li.textContent), [bad.review.validation.errors[0]]);
+  assert.match(h.text("aib-cr-validation"), /^✕ Cannot publish · 1 error · 0 warnings · 0 info$/); assert.strictEqual(h.$("aib-cr-errors").hidden, false, "errors open by themselves"); assert.deepStrictEqual(h.$("aib-cr-errors").children.map(li => li.textContent), [bad.review.validation.errors[0]]);
   h.$("aib-cr-confirm").checked = true; await h.$("aib-cr-confirm").onchange(); assert.strictEqual(h.$("aib-cr-publish").disabled, true);
   const state = { conv: convView({ workspace: WS({ modified: 1 }, { conflict: true }), can_edit: true }), review: REVIEW({ conflict: true, can_publish: false }) };
   const c = await editChat(state); assert.strictEqual(c.$("aib-changes-conflict").hidden, false);
@@ -863,8 +863,9 @@ test("changes: the review and its file list collapse, feedback follows Undo, Res
   const state = { conv: convView({ workspace: WS(), can_edit: true }) }; const h = await panelChat(state);
   assert.deepStrictEqual([h.text("aib-changes-review"), h.$("aib-changes-review").attrs["aria-expanded"]], ["Review changes", "false"]);
   await h.click("aib-changes-review"); assert.deepStrictEqual([h.text("aib-changes-review"), h.$("aib-changes-review").attrs["aria-expanded"], h.$("aib-cr").hidden], ["Hide changes", "true", false]);
-  assert.strictEqual(h.text("aib-cr-files-toggle"), "Files (2)"); assert.strictEqual(h.$("aib-cr-files-toggle").attrs["aria-expanded"], "true"); assert.strictEqual(h.$("aib-cr-files").hidden, false);
-  await h.click("aib-cr-files-toggle"); assert.deepStrictEqual([h.$("aib-cr-files").hidden, h.$("aib-cr-files-toggle").attrs["aria-expanded"]], [true, "false"]);
+  assert.match(h.text("aib-cr-files-toggle"), /Files changed \(2\)/); assert.deepStrictEqual([h.$("aib-cr-files-toggle").attrs["aria-expanded"], h.$("aib-cr-files").hidden, h.$("aib-cr-diff").hidden], ["false", true, true], "files and diffs start folded");
+  await h.click("aib-cr-files-toggle"); assert.deepStrictEqual([h.$("aib-cr-files").hidden, h.$("aib-cr-files-toggle").attrs["aria-expanded"], h.$("aib-cr-diff").hidden], [false, "true", true], "the list opens, the diff still waits for a file");
+  await h.click("aib-cr-files-toggle"); assert.strictEqual(h.$("aib-cr-files").hidden, true);
   assert.strictEqual(h.$("aib-cr-diff").children.length > 0, true, "the diff stays while the list is folded"); assert.match(h.$("aib-cr-validation").className, /ok/);
   assert.strictEqual(h.fetches.filter(f => f.url === `${U}/review`).length, 1);
   await h.click("aib-changes-review"); assert.strictEqual(h.$("aib-cr").hidden, true); assert.strictEqual(h.fetches.filter(f => f.url === `${U}/review`).length, 1, "hiding needs no request");
@@ -881,7 +882,7 @@ test("the review keeps the conversation visible and shows a highlighted diff and
   assert.deepStrictEqual(add.children.slice(1).filter(c => /^tk-/.test(c.className)).map(c => `${c.className}:${c.textContent}`), ["tk-flag:--all-namespaces", "tk-com:# list"]);
   assert.strictEqual(textOf(rows[4]).replace(/\n$/, ""), "+kubectl get pods --all-namespaces # list"); assert.match(rows[0].className, /meta/); assert.match(rows[2].className, /hunk/);
   const bad = await panelChat({ conv: convView({ workspace: WS(), can_edit: true }), review: REVIEW({ can_publish: false, validation: { passed: false, errors: ["x"] } }) }); await bad.click("aib-changes-review");
-  assert.match(bad.$("aib-cr-validation").className, /bad/); assert.match(bad.text("aib-cr-validation"), /^✕ Validation failed/);
+  assert.match(bad.$("aib-cr-validation").className, /bad/); assert.match(bad.text("aib-cr-validation"), /^✕ Cannot publish/);
 });
 test("the stylesheets and script of the redesign keep the project rules", () => {
   assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(|new Function/.test(MD_SRC), "ai-markdown.js builds DOM nodes only");

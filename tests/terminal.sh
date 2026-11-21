@@ -17,6 +17,18 @@ grep -q '"-t", "scrollback=10000"' <<< "${cmd}" && r=ok || r=bad; check "ttyd sc
 ! grep -q macOptionClickForcesSelection Dockerfile && r=ok || r=bad; check "no macOptionClickForcesSelection workaround" "$r"
 grep -q '"bash", "/workspace/engine/terminal.sh"\]' <<< "${cmd}" && r=ok || r=bad; check "ttyd runs terminal.sh directly (no wrapper, no attach)" "$r" "${cmd}"
 grep -q 'clear() { command clear -x' engine/shell/bashrc && r=ok || r=bad; check "clear keeps the scrollback (clear -x)" "$r"
+# A Lab published from the AI Lab Assistant replaces its directory: a shell inside it must see the new files at its next command (no manual cd).
+D="$(mktemp -d)"; mkdir "${D}/real" "${D}/real/lab"; ln -s "${D}/real" "${D}/uc"; echo old > "${D}/real/lab/old.txt"; sed -n '/^_refresh_cwd/,/^trap/p' engine/shell/bashrc > "${D}/rc"
+out="$(bash --noprofile --rcfile "${D}/rc" -i 2>&1 <<EOF
+cd ${D}/uc/lab
+mv ${D}/real/lab ${D}/real/gone; mkdir ${D}/real/lab; echo new > ${D}/real/lab/new.txt; rm -rf ${D}/real/gone
+ls
+false; echo status=\$?
+pwd
+EOF
+)"
+grep -qx 'new.txt' <<< "${out}" && ! grep -q 'old.txt' <<< "${out}" && grep -qx 'status=1' <<< "${out}" && grep -qx "${D}/uc/lab" <<< "${out}" && r=ok || r=bad
+check "a shell inside a replaced Lab sees the new files at its next command (same logical path, exit status kept)" "$r" "${out}"; rm -rf "${D}"
 ! grep -q '/connect' web/app.py web/static/app.js && r=ok || r=bad; check "no terminal connect endpoint or call" "$r"
 
 IMG="$(docker inspect -f '{{.Config.Image}}' cnpg-playground 2>/dev/null)"

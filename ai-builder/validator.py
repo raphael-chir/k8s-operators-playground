@@ -10,11 +10,12 @@ import subprocess
 from pathlib import Path
 
 SERVICE_KEYS = ("cert_manager", "minio", "prometheus", "grafana")
+INTERNAL_PROVIDERS = ("kind", "k3d")   # engine/providers/<name>/ (external is not an internal provider)
 NAME_RE = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 SCENARIO_RE = re.compile(r"^([0-9]{2})_[a-z0-9][a-z0-9_]*\.sh$")
 MANIFEST_REF_RE = re.compile(r"manifests/([A-Za-z0-9_./-]+\.ya?ml)")
 TOP_FILES = {"usecase.yaml", "README.md"}
-MAX_FILES, MAX_BYTES = 60, 256 * 1024
+MAX_FILES, MAX_BYTES = 300, 256 * 1024     # MAX_FILES is the publisher's limit (publishing.MAX_FILES)
 SNAPSHOT_SKIP_DIRS = {".git", ".ai-builder", "__pycache__", "node_modules"}
 SNAPSHOT_SKIP_FILES = {".DS_Store"}
 
@@ -59,8 +60,33 @@ def check_usecase_yaml(text):
     if errors:
         return errors
     for key in ("title", "description"):
+        if key == "title" and isinstance(data.get("name"), str) and data["name"]:
+            continue                                   # same fallback as the runtime: title defaults to name
         if not isinstance(data.get(key), str) or not data[key]:
             errors.append(f"usecase.yaml: '{key}' is missing")
+    # Provider rules, as in engine/lib/usecase-manifest.sh: no provider section = internal/kind.
+    prov = data.get("provider", {})
+    if not isinstance(prov, dict):
+        errors.append("usecase.yaml: 'provider' must be a section")
+        return errors
+    ptype = prov.get("type") or "internal"
+    pname = prov.get("name") or ("kind" if not prov else "")
+    if prov and not re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", pname):
+        errors.append("usecase.yaml: 'provider.name' is required with a provider section (e.g. kind, k3d, openshift, eks)")
+    if ptype == "external":
+        ctx = prov.get("context", "")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]*", ctx):
+            errors.append("usecase.yaml: provider type external needs 'provider.context' (a kubeconfig context name)")
+        elif ctx.startswith("kind-"):
+            errors.append(f"usecase.yaml: 'provider.context' must not be a Kind context ({ctx})")
+        return errors                                  # infrastructure and services do not apply: ignored, not validated
+    if ptype != "internal":
+        errors.append(f"usecase.yaml: unknown provider type '{ptype}' (expected: internal, external)")
+        return errors
+    if prov.get("context"):
+        errors.append("usecase.yaml: 'provider.context' is only for provider type external")
+    if pname and pname not in INTERNAL_PROVIDERS:
+        errors.append(f"usecase.yaml: unsupported internal provider '{pname}' (available: {', '.join(INTERNAL_PROVIDERS)})")
     infra = data.get("infrastructure")
     if not isinstance(infra, dict):
         errors.append("usecase.yaml: 'infrastructure' section is missing")
@@ -82,12 +108,13 @@ def check_usecase_yaml(text):
 
 # --- manifests ------------------------------------------------------------------------------------------------------
 def check_manifest(path, rel):
+    """(errors, warnings): unreadable, empty or unparseable YAML blocks; a document without apiVersion/kind only warns."""
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
-        return [f"{rel}: unreadable ({exc.__class__.__name__})"]
+        return [f"{rel}: unreadable ({exc.__class__.__name__})"], []
     if not text.strip():
-        return [f"{rel}: empty"]
+        return [f"{rel}: empty"], []
     try:
         import yaml  # optional
     except ImportError:
@@ -96,38 +123,39 @@ def check_manifest(path, rel):
         try:
             docs = [d for d in yaml.safe_load_all(text) if d is not None]
         except yaml.YAMLError as exc:
-            return [f"{rel}: invalid YAML ({str(exc).splitlines()[0]})"]
+            return [f"{rel}: invalid YAML ({str(exc).splitlines()[0]})"], []
         bad = [d for d in docs if not (isinstance(d, dict) and "apiVersion" in d and "kind" in d)]
-        return [f"{rel}: every document needs apiVersion and kind"] if bad or not docs else []
+        return [], ([f"{rel}: every document should have apiVersion and kind"] if bad or not docs else [])
     # Fallback without PyYAML: structural checks only (tabs, and apiVersion/kind per document).
-    errors = []
+    errors, warnings = [], []
     if re.search(r"^\t|^ *\t", text, re.M):
         errors.append(f"{rel}: tab characters in indentation")
     for i, doc in enumerate(re.split(r"^---\s*$", text, flags=re.M), 1):
         if doc.strip() and not (re.search(r"^apiVersion:", doc, re.M) and re.search(r"^kind:", doc, re.M)):
-            errors.append(f"{rel}: document {i} lacks a top-level apiVersion or kind")
-    return errors
+            warnings.append(f"{rel}: document {i} has no top-level apiVersion or kind")
+    return errors, warnings
 
 
 # --- scenarios --------------------------------------------------------------------------------------------------------
 def check_scenario(path, rel, text):
-    errors = []
+    """Scenario conventions, never blocking. Returns (warnings, info): structure problems are warnings, the optional ui_* helpers are information."""
+    warnings, info = [], []
     if not text.startswith("#!/usr/bin/env bash"):
-        errors.append(f"{rel}: first line must be '#!/usr/bin/env bash'")
+        warnings.append(f"{rel}: the first line should be '#!/usr/bin/env bash'")
     if "set -Eeuo pipefail" not in text:
-        errors.append(f"{rel}: missing 'set -Eeuo pipefail'")
+        warnings.append(f"{rel}: 'set -Eeuo pipefail' is recommended")
     for lib in ("engine/lib/ui.sh", "engine/usecase.sh"):
         if not re.search(r"^\s*source\s+\"\$\{SCRIPT_DIR\}/\.\./\.\./" + re.escape(lib) + r"\"", text, re.M):
-            errors.append(f"{rel}: must source \"${{SCRIPT_DIR}}/../../{lib}\" (SCRIPT_DIR is the script's directory)")
+            warnings.append(f"{rel}: it usually sources \"${{SCRIPT_DIR}}/../../{lib}\" (SCRIPT_DIR is the script's directory)")
     if not re.search(r"^SCRIPT_DIR=", text, re.M):
-        errors.append(f"{rel}: SCRIPT_DIR is not defined")
+        warnings.append(f"{rel}: SCRIPT_DIR is not defined")
     if not re.search(r"^main\s+\"\$@\"\s*$", text, re.M):
-        errors.append(f"{rel}: must end by calling main \"$@\"")
+        warnings.append(f"{rel}: it usually ends by calling main \"$@\"")
     if not path.name.startswith("99_"):
         for fn in ("ui_note", "ui_command", "ui_pause"):
             if fn not in text:
-                errors.append(f"{rel}: a scenario must use {fn}")
-    return errors
+                info.append(f"{rel}: optional helper {fn} not used")
+    return warnings, info
 
 
 def bash_syntax(path, rel):
@@ -141,13 +169,18 @@ def bash_syntax(path, rel):
 
 # --- the draft as a whole -----------------------------------------------------------------------------------------------
 def validate_draft(draft, name):
-    """Return a list of error strings (empty = valid). `draft` is the directory that will become usecases/<name>/."""
-    errors = []
+    """Return the blocking errors (empty = valid). `draft` is the directory that will become usecases/<name>/."""
+    return validate_draft_full(draft, name)[0]
+
+
+def validate_draft_full(draft, name):
+    """Return (errors, warnings, info). Errors block publishing (safety, usecase.yaml, syntax, consistency); warnings and info never do."""
+    errors, warnings, info = [], [], []
     draft = Path(draft)
     if not NAME_RE.match(name or ""):
-        return [f"invalid use case name '{name}'"]
+        return [f"invalid use case name '{name}'"], [], []
     if not draft.is_dir() or draft.is_symlink():
-        return [f"draft directory missing: {draft.name}"]
+        return [f"draft directory missing: {draft.name}"], [], []
     root = draft.resolve()
     files = []
     for dirpath, dirnames, filenames in os.walk(draft, followlinks=False):
@@ -182,11 +215,11 @@ def validate_draft(draft, name):
             if parts[0].endswith(".sh"):
                 scenarios.append(p)
             else:
-                errors.append(f"{rel}: unexpected file at the use case root (allowed: usecase.yaml, README.md, NN_name.sh, manifests/)")
+                warnings.append(f"{rel}: unexpected file at the use case root (usual: usecase.yaml, README.md, NN_name.sh, manifests/)")
         elif parts[0] == "manifests" and len(parts) == 2 and re.fullmatch(r"[A-Za-z0-9_.-]+\.ya?ml", parts[1]):
             manifests[parts[1]] = p
         else:
-            errors.append(f"{rel}: unexpected path (manifests/ holds *.yaml files only, no subdirectories)")
+            warnings.append(f"{rel}: unexpected path (manifests/ usually holds *.yaml files only, no subdirectories)")
 
     # 1-2 usecase.yaml
     uc = draft / "usecase.yaml"
@@ -197,25 +230,22 @@ def validate_draft(draft, name):
             errors += check_usecase_yaml(uc.read_text(encoding="utf-8"))
         except UnicodeDecodeError:
             errors.append("usecase.yaml: not valid UTF-8")
-    if not (draft / "README.md").is_file():
-        errors.append("README.md is missing")
+    # README.md, scenarios and manifests/ are optional: usecase.yaml is the only mandatory file.
 
     # 3-5 scenarios: names, numbering, bash syntax, structure
     numbers = {}
     for p in sorted(scenarios):
         m = SCENARIO_RE.match(p.name)
         if not m:
-            errors.append(f"{p.name}: scenario names look like NN_short_name.sh (two digits, lowercase letters, digits, underscores)")
+            warnings.append(f"{p.name}: scenario names usually look like NN_short_name.sh (two digits, lowercase letters, digits, underscores)")
             continue
         numbers.setdefault(m.group(1), []).append(p.name)
     for nn, names in numbers.items():
         if len(names) > 1:
-            errors.append(f"scenario number {nn} is used by several files: {', '.join(sorted(names))}")
+            warnings.append(f"scenario number {nn} is used by several files: {', '.join(sorted(names))}")
     ordered = sorted(int(n) for n in numbers if n != "99")
-    if not ordered:
-        errors.append("no scenario found (expected at least 01_*.sh)")
-    elif ordered != list(range(1, len(ordered) + 1)):
-        errors.append("scenario numbers must run 01, 02, 03... without gaps (99_*.sh is reserved for cleanup)")
+    if ordered and ordered != list(range(1, len(ordered) + 1)):
+        warnings.append("scenario numbers usually run 01, 02, 03... without gaps (99_*.sh is reserved for cleanup)")
     referenced = set()
     for p in sorted(scenarios):
         rel = p.name
@@ -225,14 +255,18 @@ def validate_draft(draft, name):
         except UnicodeDecodeError:
             errors.append(f"{rel}: not valid UTF-8")
             continue
-        errors += check_scenario(p, rel, text)
+        w, i = check_scenario(p, rel, text)
+        warnings += w
+        info += i
         referenced.update(MANIFEST_REF_RE.findall(text))   # 6. referenced manifests exist
     for ref in sorted(referenced):
         if "/" in ref or ref not in manifests:
             errors.append(f"a scenario references manifests/{ref}, which does not exist in the draft")
     for fname, p in sorted(manifests.items()):
-        errors += check_manifest(p, f"manifests/{fname}")
-    return errors
+        e, w = check_manifest(p, f"manifests/{fname}")
+        errors += e
+        warnings += w
+    return errors, warnings, info
 
 
 # --- "nothing else changed" -----------------------------------------------------------------------------------------------

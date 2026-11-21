@@ -84,6 +84,8 @@ main.aib-dragging #panes iframe { pointer-events: none; }        /* a terminal n
 #aib .aib-msg.assistant:last-child, #aib .aib-msg.assistant.pending { border-bottom: 0; }
 #aib .aib-msg.assistant.error { padding: 8px 12px; border-left: 3px solid var(--bad); background: var(--surface); border-radius: 0 8px 8px 0; color: var(--text); white-space: pre-wrap; }
 #aib .aib-msg.pending { color: var(--muted); font-style: italic; }
+#aib .aib-msg.live > :last-child::after { content: "▍"; margin-left: 2px; color: var(--muted); animation: aib-blink 1s steps(2) infinite; }
+@keyframes aib-blink { 50% { opacity: 0; } }
 #aib .aib-msg-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; margin-top: 6px; font-size: 11px; line-height: 1.4; color: var(--muted); font-style: normal; white-space: normal; }
 #aib .aib-meta-toggle { padding: 0 6px; font-size: 11px; line-height: 1.5; color: var(--muted); background: transparent; border-color: transparent; border-radius: 4px; }
 #aib .aib-meta-toggle:hover:not(:disabled) { color: var(--text); background: var(--hover); }
@@ -159,8 +161,13 @@ main.aib-dragging #panes iframe { pointer-events: none; }        /* a terminal n
 #aib .aib-changes-actions { display: inline-flex; gap: 6px; flex-wrap: wrap; }
 #aib .aib-changes > .aib-banner { margin: 0 10px 8px; }
 #aib .aib-changes .aib-banner button { margin-left: 8px; }
-#aib .aib-cr { display: flex; flex-direction: column; gap: 8px; padding: 8px 10px 10px; max-height: min(46vh, 420px); overflow: auto; border-top: 1px solid var(--border); }
-#aib .aib-cr-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+#aib .aib-cr { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px 10px; max-height: min(46vh, 420px); overflow: auto; border-top: 1px solid var(--border); }
+#aib .aib-cr-sec { align-self: flex-start; max-width: 100%; padding: 2px 4px; font-size: 12px; font-weight: 600; text-align: left; color: var(--muted); background: transparent; border: 0; overflow-wrap: anywhere; }
+#aib .aib-cr-sec:hover:not(:disabled) { background: var(--hover); }
+#aib .aib-cr-sec.err { color: var(--bad); } #aib .aib-cr-sec.warn { color: var(--warn); } #aib .aib-cr-sec.info { color: var(--link); }
+#aib .aib-cr-list { margin: 0 0 4px; padding: 0 0 0 26px; font-size: 12px; line-height: 1.5; color: var(--text); }
+#aib .aib-cr-list li { margin: 1px 0; overflow-wrap: anywhere; }
+#aib .aib-cr-list.err li::marker { color: var(--bad); } #aib .aib-cr-list.warn li::marker { color: var(--warn); } #aib .aib-cr-list.info li::marker { color: var(--link); }
 #aib .aib-validation { margin: 0; font-size: 12.5px; font-weight: 600; }
 #aib .aib-validation.ok { color: var(--ok); }
 #aib .aib-validation.bad { color: var(--bad); }
