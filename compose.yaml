@@ -10,8 +10,12 @@ services:
     restart: unless-stopped
     working_dir: /workspace
     ports:
-      - "127.0.0.1:8080:8080"         # Web UI (embeds the terminal), localhost only
-      - "127.0.0.1:7681:7681"         # raw ttyd terminal, kept for debugging
+      # PLAYGROUND_BIND_ADDRESS (./playground validates it; .env or the environment) is the host address the ports are published on:
+      # 127.0.0.1 by default (localhost only). A LAN address exposes the terminal and the AI Builder to that network.
+      - "${PLAYGROUND_BIND_ADDRESS:-127.0.0.1}:8080:8080"         # Web UI (embeds the terminal)
+      - "${PLAYGROUND_BIND_ADDRESS:-127.0.0.1}:7681:7681"         # raw ttyd terminal, kept for debugging
+    environment:
+      PLAYGROUND_BIND_ADDRESS: "${PLAYGROUND_BIND_ADDRESS:-127.0.0.1}"   # the Web API accepts this address as a Host name
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock   # Docker-outside-of-Docker
       - .:/workspace

@@ -9,7 +9,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 ./playground start
 
 echo
-echo "Playground ready: http://127.0.0.1:8080"
+echo "Playground ready!"   # the URLs (Local, and LAN when enabled) were printed by ./playground start above
 echo
 echo "EDB products need an EDB subscription token:"
 echo "  cp .env.example .env     # then set EDB_SUBSCRIPTION_TOKEN in .env"

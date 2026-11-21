@@ -68,6 +68,7 @@ AUTH_TOP = {"logged_in", "expires_at", "enabled", "error", "session"}
 AUTH_SESSION = {"state", "method", "url", "error", "awaiting_code", "seconds_left"}
 
 CONNECT_TIMEOUT = 3
+IPV4_RE = re.compile(r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$")
 DEFAULT_UPSTREAM = "http://ai-builder:8099"     # the compose service name and port
 
 
@@ -82,6 +83,12 @@ class Proxy:
         self.token_file = token_file or os.environ.get("AI_BUILDER_TOKEN_FILE", "/workspace/.ai-builder-token")
         hosts = allowed_hosts if allowed_hosts is not None else os.environ.get("AI_BUILDER_PROXY_ALLOWED_HOSTS", "")
         self.allowed_hosts = {h.strip().lower() for h in (hosts.split(",") if isinstance(hosts, str) else hosts) if h.strip()} | {"localhost", "127.0.0.1", "[::1]"}
+        # PLAYGROUND_BIND_ADDRESS (compose passes it): the host address the Playground is published on is a valid Host name for remote
+        # browsers. 0.0.0.0 means "any interface": then any IPv4 literal is accepted (names are not, which keeps DNS-rebinding refused).
+        bind = os.environ.get("PLAYGROUND_BIND_ADDRESS", "").strip() if allowed_hosts is None else ""
+        self.any_ipv4 = bind == "0.0.0.0"
+        if bind and not self.any_ipv4:
+            self.allowed_hosts.add(bind)
         self.scale = scale      # tests shorten the timeouts
 
     # --- the token never leaves this object ------------------------------------------------------------------------
@@ -153,7 +160,7 @@ class Proxy:
         `transform(body)` (server code only) replaces the browser's validated JSON object by the body to forward, or returns (status, payload) to refuse."""
         host = (headers.get("host") or "").lower()
         host = host[: host.rfind(":")] if re.search(r":[0-9]+$", host) else host
-        if host not in self.allowed_hosts:
+        if host not in self.allowed_hosts and not (self.any_ipv4 and IPV4_RE.match(host)):
             return 403, {"error": "forbidden host"}
         method, _, _, _, has_body = OPERATIONS[operation]
         if method != "GET" and headers.get(CSRF_HEADER, "").lower() != CSRF_VALUE:
