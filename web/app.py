@@ -21,6 +21,7 @@ from starlette.concurrency import run_in_threadpool
 
 import ai_builder_proxy
 import lab_delete
+import operations
 
 ROOT = Path(__file__).resolve().parent.parent
 LOG_DIR = Path(tempfile.gettempdir()) / "playground-operations"
@@ -53,6 +54,7 @@ def _public(op):
     if not op:
         return None
     body = {k: op[k] for k in ("kind", "state", "exit_code", "started", "finished")}
+    body["cancel"] = bool(op.get("cancel"))        # a stop that cancels a start: the page says "Cancelling…"
     # Durations are computed here, on the server clock that stamped `started`, so the page needs no clock
     # agreement with the container (and a refreshed page resumes the same timer).
     now = time.time()
@@ -102,11 +104,27 @@ def usecases():
 
 def _watch(name, op, proc):
     rc = proc.wait()
-    op["log_file"].close()
+    if op.get("log_file"):
+        op["log_file"].close()
     with _lock:
         op["exit_code"] = rc
         op["state"] = "succeeded" if rc == 0 else "failed"
         op["finished"] = time.time()
+
+
+def _spawn(name, target, extra, mode):
+    """Start `./playground usecase <target> <name>` in its own process group; the log is truncated ("wb") or appended to ("ab", a cancelled start keeps its log)."""
+    log_file = open(LOG_DIR / f"{name}.log", mode)
+    # argv list, no shell: the name was validated above and is a single argument.
+    try:
+        proc = subprocess.Popen([str(ROOT / "playground"), "usecase", target, name, *extra], cwd=ROOT,
+                                env={**os.environ, "PLAYGROUND_FORCE_COLOR": "1"},   # keep logger colors in the log
+                                stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
+                                start_new_session=True)
+    except OSError:
+        log_file.close()
+        raise
+    return log_file, proc
 
 
 def _launch(name, kind, extra, confirmed=True):
@@ -115,23 +133,35 @@ def _launch(name, kind, extra, confirmed=True):
     if name not in dict(_discover()):    # same validity rules as the CLI / use case list
         raise HTTPException(404, f"unknown use case '{name}'")
     target = "start" if kind == "start" else "stop"
+    cancelling = None
     with _lock:
         current = _ops.get(name)
         if _gate.deleting(name):
             raise HTTPException(409, f"{name} is being deleted")
         if current and current["state"] in ("starting", "stopping"):
-            raise HTTPException(409, f"{name} already has an operation in progress ({current['state']})")
-        log_file = open(LOG_DIR / f"{name}.log", "wb")
-        # argv list, no shell: the name was validated above and is a single argument.
-        proc = subprocess.Popen([str(ROOT / "playground"), "usecase", target, name, *extra], cwd=ROOT,
-                                env={**os.environ, "PLAYGROUND_FORCE_COLOR": "1"},   # keep logger colors in the log
-                                stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
-                                start_new_session=True)
-        op = {"kind": kind, "state": "starting" if kind == "start" else "stopping", "exit_code": None,
-              "started": time.time(), "finished": None, "log_file": log_file, "log_path": log_file.name}
+            # Stop while starting is the one allowed overlap: it cancels the start. Anything else (a second stop, a start during a stop) is refused,
+            # and a repeated Cancel finds the registered stop operation, so it is refused too.
+            if not (kind == "stop" and current["state"] == "starting" and current.get("proc")):
+                raise HTTPException(409, f"{name} already has an operation in progress ({current['state']})")
+            cancelling = current
+        op = {"kind": kind, "state": "starting" if kind == "start" else "stopping", "exit_code": None, "cancel": cancelling is not None,
+              "started": time.time(), "finished": None, "log_file": None, "log_path": str(LOG_DIR / f"{name}.log"), "proc": None}
+        if not cancelling:
+            op["log_file"], op["proc"] = _spawn(name, target, extra, "wb")
         _ops[name] = op
-    threading.Thread(target=_watch, args=(name, op, proc), daemon=True).start()
+    if cancelling:
+        # the start's output ends with a marker, then the stop's output follows in the same log
+        threading.Thread(target=operations.cancel_then_stop, daemon=True, args=(
+            _lock, cancelling, op, lambda: _spawn_cancel_stop(name, extra), lambda proc: _watch(name, op, proc))).start()
+    else:
+        threading.Thread(target=_watch, args=(name, op, op["proc"]), daemon=True).start()
     return JSONResponse(_public(op), status_code=202)
+
+
+def _spawn_cancel_stop(name, extra):
+    with open(LOG_DIR / f"{name}.log", "ab") as marker:
+        marker.write(b"\n--- Start cancelled: stopping the use case and deleting its clusters ---\n")
+    return _spawn(name, "stop", extra, "ab")
 
 
 @app.post("/api/usecases/{name}/start")
@@ -384,7 +414,9 @@ def _host_metrics():
         m = json.loads(HOST_METRICS_FILE.read_text())
         if time.time() - float(m["ts"]) > _HOST_MAX_AGE:
             return None
-        return {**{k: m[k] for k in ("cpu_percent", "cpus", "mem_used_bytes", "mem_total_bytes")}, "os": m.get("os", "unknown")}
+        # disk and diagnostics come from the same host-side checks as `./playground doctor`; absent (older sampler) = unknown
+        extra = {k: m.get(k) for k in ("disk_percent", "disk_avail_bytes", "disk_total_bytes", "warnings", "critical", "warning_titles")}
+        return {**{k: m[k] for k in ("cpu_percent", "cpus", "mem_used_bytes", "mem_total_bytes")}, "os": m.get("os", "unknown"), **extra}
     except (OSError, ValueError, KeyError, TypeError):
         return None
 

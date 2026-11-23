@@ -325,6 +325,22 @@ cmd_doctor() {
   if container_running && docker exec "${CONTAINER}" k3d version >/dev/null 2>&1; then info "k3d (provider.name k3d): available in the Playground image"
   else info "k3d (provider.name k3d): not in the running Playground image; optional, rebuild it with ./playground install to use it"; fi
 
+  # 12. host resources (engine/lib/hostcheck.sh, shared with the dashboard bar and the pre-provisioning check). Advisory only: never blocking,
+  # nothing is changed; corrections are printed for you to run.
+  say; say "Host resources"
+  # shellcheck source=engine/lib/hostcheck.sh
+  . "${ROOT}/engine/lib/hostcheck.sh"
+  local rec rid rst rtitle rcur
+  while IFS= read -r rec; do
+    [ -n "${rec}" ] || continue
+    IFS='|' read -r rid rst rtitle rcur _ <<< "${rec}"
+    case "${rst}" in
+      OK) ok "${rtitle}: ${rcur}" ;;
+      UNAVAILABLE) info "${rtitle}: ${rcur}" ;;
+      *) warns=$((warns + 1)); hostcheck_text "${rec}" | sed "s/^\[/       [/; /^\[/!s/^/       /" ;;
+    esac
+  done <<< "$(hostcheck_collect)"
+
   say
   if [ "${fails}" -gt 0 ]; then say "${fails} blocking problem(s). Fix them and run ./playground doctor again."; return 1; fi
   if [ "${warns}" -gt 0 ]; then say "Environment ready, with ${warns} warning(s)."; else say "Environment ready."; fi

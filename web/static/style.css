@@ -162,6 +162,7 @@ dialog ul { padding-left: 18px; }
 #resources .lvl-ok .res-pct { color: var(--res-ok); }
 #resources .lvl-warn .res-pct { color: var(--res-warn); } #resources .lvl-warn .res-bar i { background: var(--res-warn); }
 #resources .lvl-crit .res-pct { color: var(--res-crit); } #resources .lvl-crit .res-bar i { background: var(--res-crit); }
+#resources .res-alert { cursor: help; }
 #resources .lvl-na .res-pct { color: var(--muted); font-weight: 400; }
 #resources .res-stale { color: var(--warn); margin-left: 14px; }
 #resources .res-age { margin-left: auto; padding-left: 14px; color: var(--muted); }

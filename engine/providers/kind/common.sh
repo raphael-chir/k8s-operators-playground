@@ -74,6 +74,16 @@ managed_clusters() { _kind_clusters_matching "^${CLUSTER_PREFIX}-[a-z0-9]+(-[a-z
 # The clusters owned by one use case: <prefix>-<usecase>-<digits>, exactly. Other clusters are ignored.
 usecase_clusters() { _kind_clusters_matching "^${CLUSTER_PREFIX}-$1-[0-9]+\$"; }
 
+# Containers of ONE cluster that `kind get clusters` no longer lists (a creation killed half way): removed by their Kind label, so only this
+# cluster's own containers are touched. Idempotent; the name has already been checked by require_managed_name.
+sweep_cluster_containers() {
+  local ids; ids="$(docker ps -aq --filter "label=io.x-k8s.kind.cluster=$1" 2>/dev/null || true)"
+  [ -z "${ids}" ] && return 0
+  log_info "Removing leftover containers of ${1}"
+  # shellcheck disable=SC2086
+  docker rm -f ${ids} >/dev/null || log_warn "Could not remove every leftover container of ${1}"
+}
+
 # Captured first: grep -q closing the pipe early would trip pipefail.
 cluster_exists() {
   local existing

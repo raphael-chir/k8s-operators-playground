@@ -29,6 +29,7 @@ USECASE_DIR="${PROJECT_ROOT}/usecases/${USECASE}"
 
 source "${PROJECT_ROOT}/engine/lib/logger.sh"
 source "${PROJECT_ROOT}/engine/lib/usecase-manifest.sh"
+source "${PROJECT_ROOT}/engine/lib/hostcheck.sh"       # host resource diagnostics (warnings only)
 # The use case's provider (usecase.yaml provider.type, default kind) unless the environment forces one.
 [ -n "${PLAYGROUND_PROVIDER:-}" ] || PLAYGROUND_PROVIDER="$(usecase_provider "${USECASE}")"
 export PLAYGROUND_PROVIDER   # inherited by the scripts it starts (stacks/up.sh must use this use case's provider, not the default)
@@ -104,6 +105,7 @@ usecase_start() {
   reason="$(usecase_manifest_check "${USECASE}")" || die "${reason}"
   count="$(usecase_config "${USECASE}" infrastructure.clusters)"; count="${count:-1}"
   workers="$(usecase_config "${USECASE}" infrastructure.workers_per_cluster)"; workers="${workers:-1}"
+  hostcheck_preflight "${PLAYGROUND_PROVIDER}" || true   # warnings in the operation log, never blocking
   log_section "Installing use case ${USECASE}"
   usecase_provision "${count}" "${workers}"
   if [ "${count}" -gt 1 ]; then

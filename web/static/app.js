@@ -316,11 +316,16 @@ function ucItem(u, selected) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "uc-action " + (running ? "stop" : "start");
-  button.append(actionIcon(running ? "stop" : "start"));
-  if (active(op)) {
+  const cancelling = op && op.state === "starting";     // Cancel = the ordinary Stop, offered while the use case is starting
+  button.append(actionIcon(running || cancelling ? "stop" : "start"));
+  if (cancelling) {
+    button.className = "uc-action stop";
+    button.title = "Cancel"; button.setAttribute("aria-label", `Cancel ${u.title || u.name}`);
+    button.onclick = e => { e.stopPropagation(); askStop(u.name, true); };
+  } else if (active(op)) {
     button.disabled = true;
     button.classList.add("busy");
-    const label = op.state === "starting" ? "Starting" : "Stopping";
+    const label = op.cancel ? "Cancelling" : "Stopping";
     button.title = label; button.setAttribute("aria-label", label);
   } else {
     const label = running ? "Stop" : "Start";
@@ -370,7 +375,7 @@ function clockSeconds(name) {
 function opText(u) {
   const op = u.operation, c = opClock.get(u.name);
   if (op.state === "starting") return `Starting… ${fmtDuration(clockSeconds(u.name))}`;
-  if (op.state === "stopping") return "stopping…";
+  if (op.state === "stopping") return op.cancel ? "cancelling… deleting clusters" : "stopping…";
   const took = op.kind === "start" ? ` — ${fmtDuration(clockSeconds(u.name))}` : "";
   if (op.state === "failed") return `${op.kind} failed (exit ${op.exit_code})${took}`;
   const sinceDone = c && c.since !== null ? c.since + (Date.now() - c.at) / 1000 : Infinity;
@@ -411,9 +416,10 @@ async function start(name) {
 
 const dialog = document.getElementById("confirm");
 let stopTarget = null;
-function askStop(name) {
+function askStop(name, cancelling) {
   stopTarget = name;
   document.getElementById("confirm-name").textContent = name;
+  dialog.querySelector("h3").firstChild.textContent = cancelling ? "Cancel the start of " : "Stop ";
   dialog.showModal();
 }
 document.getElementById("confirm-cancel").onclick = () => dialog.close();
@@ -615,6 +621,13 @@ function usageItem(label, fraction, tip) {          // fraction null = not avail
   }
   return item;
 }
+// Compact warning of the host diagnostics (same checks as ./playground doctor); not clickable, the details are in the terminal.
+function alertItem(h) {
+  const item = sbEl("span", "res-item res-alert lvl-" + (h.critical > 0 ? "crit" : "warn"));
+  item.title = `${h.warning_titles || "Host resource warning"}\nDetails and corrections: ./playground doctor`;
+  item.append(sbEl("b", "res-pct", `⚠ ${h.warnings}`));
+  return item;
+}
 const countItem = (label, value, tip, unit) => { const i = sbEl("span", "res-item"); i.title = tip; i.append(...(label ? [sbEl("span", "res-lbl", label)] : []), sbEl("b", "", value), ...(unit ? [sbEl("span", "res-lbl", unit)] : [])); return i; };
 function renderResources() {
   const d = resData, secs = [];
@@ -627,7 +640,9 @@ function renderResources() {
   const [osFile, osName] = (h && OS_ICONS[h.os]) || ["computer.svg", h ? "Host (OS unknown)" : "Host (no host metrics)"];
   section(icon(osFile, "Host: " + osName),
     usageItem("CPU", h ? h.cpu_percent / 100 : null, h ? `Host CPU: ${h.cpu_percent.toFixed(1)}% of ${h.cpus} logical CPUs` : "Host metrics are not available (no host-side sampler running)"),
-    usageItem("RAM", h ? h.mem_used_bytes / h.mem_total_bytes : null, h ? `Host RAM: ${fmtBytes(h.mem_used_bytes)} used of ${fmtBytes(h.mem_total_bytes)}` : "Host metrics are not available (no host-side sampler running)"));
+    usageItem("RAM", h ? h.mem_used_bytes / h.mem_total_bytes : null, h ? `Host RAM: ${fmtBytes(h.mem_used_bytes)} used of ${fmtBytes(h.mem_total_bytes)}` : "Host metrics are not available (no host-side sampler running)"),
+    usageItem("Disk", h && h.disk_percent != null ? h.disk_percent / 100 : null, h && h.disk_percent != null ? `Host disk: ${h.disk_percent}% used, ${fmtBytes(h.disk_avail_bytes)} available of ${fmtBytes(h.disk_total_bytes)}` : "Host disk usage is not available here"),
+    ...(h && h.warnings > 0 ? [alertItem(h)] : []));
   if (d && d.engine && d.playground) {
     const e = d.engine, p = d.playground, cores = p.cpu_percent / 100;   // Docker: 100% = one logical CPU
     section(icon("docker.svg", "Docker", "#2496ed"),

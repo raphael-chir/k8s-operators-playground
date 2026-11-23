@@ -17,4 +17,5 @@ for name in "$@"; do
   else
     log_info "Cluster ${name} does not exist, nothing to delete"
   fi
+  sweep_cluster_containers "${name}"
 done

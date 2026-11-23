@@ -159,6 +159,15 @@ provider_info() {
   elif shown minio; then log_info "Credentials (MinIO): admin / password. Bucket: cnpg"; fi
 }
 
+# Containers of ONE cluster (nodes, load balancer) left behind by an interrupted creation, found by k3d's own label: only this cluster's.
+_k3d_sweep() {
+  local ids; ids="$(docker ps -aq --filter "label=k3d.cluster=$1" 2>/dev/null || true)"
+  [ -z "${ids}" ] && return 0
+  log_info "Removing leftover containers of ${1}"
+  # shellcheck disable=SC2086
+  docker rm -f ${ids} >/dev/null || log_warn "Could not remove every leftover container of ${1}"
+}
+
 # Delete the named clusters (and everything in them). Explicit names only; a missing cluster is not an error. The shared network stays.
 provider_destroy() {
   local name
@@ -173,6 +182,7 @@ provider_destroy() {
     else
       log_info "Cluster ${name} does not exist, nothing to delete"
     fi
+    _k3d_sweep "${name}"
   done
 }
 
