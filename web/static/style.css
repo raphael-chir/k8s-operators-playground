@@ -35,10 +35,12 @@ header {
   padding: 8px 16px; background: var(--header-bg); color: var(--header-text); border-bottom: 1px solid var(--border);
 }
 .hl, .hr { display: flex; align-items: center; gap: 10px; min-width: 0; }
-/* Title: Roboto Condensed, uppercase, with the Gold Leaf bar of the EDB masthead. */
-h1 { margin: 0; padding-left: 10px; border-left: 4px solid var(--gold); font-size: 18px; line-height: 1.1;
+/* Kubernetes logo (official wheel, local SVG; its own blue/white colors work on both header themes) left of the title. */
+.brand-logo { height: 34px; width: auto; flex: none; margin: -4px 0; /* taller than the header content: the negative margin keeps the header height */ filter: drop-shadow(0 0 1px #ffffffcc); }
+/* Title: Roboto Condensed, with the Kubernetes logo at its left (no uppercase transform: "K8s" keeps its case). */
+h1 { margin: 0; font-size: 20px; line-height: 1.1;
   font-family: "Roboto Condensed", "Arial Narrow", "Roboto", sans-serif; font-weight: 800; letter-spacing: .03em;
-  text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* Version next to the title: small and quiet, from /api/meta (VERSION file); hidden until known. */
 .ver { font-size: 11px; color: var(--header-sub); white-space: nowrap; letter-spacing: .02em; align-self: flex-end; padding-bottom: 2px; }
 .ver:empty { display: none; }
