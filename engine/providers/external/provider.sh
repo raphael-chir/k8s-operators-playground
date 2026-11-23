@@ -6,6 +6,8 @@
 #     host, runs engine/providers/external/import.sh) and kept in ~/.kube/external/<usecase>.yaml (mode 600, never printed);
 #   * "attached" = that context is merged into the container's shared ~/.kube/config (the Playground's own volume), which is what
 #     terminals, kubectl and oc read; start attaches after checking connectivity, stop (provider_destroy) only detaches.
+#   * on native Linux Docker a loopback-only API goes through a labelled socat forwarder (host-bridge.sh), started on attach if needed and
+#     removed on detach when unused.
 # Every function below touches the container's own kubeconfig or reads the cluster; none modifies the external cluster.
 EXTERNAL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXTERNAL_STORE="${HOME}/.kube/external"
@@ -13,6 +15,7 @@ EXTERNAL_SHARED="${HOME}/.kube/config"
 EXTERNAL_HOST_KUBECONFIG="${EXTERNAL_HOST_KUBECONFIG:-/host-kubeconfig}"   # the host kubeconfig, mounted read-only by compose.yaml
 source "${EXTERNAL_DIR}/../../lib/usecase-manifest.sh"
 source "${EXTERNAL_DIR}/../../lib/logger.sh"
+source "${EXTERNAL_DIR}/host-bridge.sh"
 
 # ext-<usecase>-<n> (n is always 1: one external cluster per use case).
 _ext_usecase() { local n="${1#ext-}"; printf '%s' "${n%-1}"; }
@@ -46,6 +49,29 @@ provider_list() {
 # Names of the context, cluster and user of the imported credentials file ("ctx<TAB>cluster<TAB>user").
 _ext_names() {
   KUBECONFIG="$1" kubectl config view --raw -o json | jq -r '.contexts[0] | "\(.name)\t\(.context.cluster)\t\(.context.user)"'
+}
+
+# Linux host forwarder (host-bridge.sh). Prints "<ip>:<port>" of a stored server shaped like https://<ipv4>:<port> WITH a tls-server-name
+# (what import.sh writes when it goes through a gateway or a forwarder), nothing otherwise.
+_ext_bridge_listen() {
+  KUBECONFIG="$1" kubectl config view --raw -o json 2>/dev/null | jq -r '.clusters[0].cluster |
+    select((.["tls-server-name"] // "") != "" and (.server | test("^https://[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+:[0-9]+$")) and (.server | test("^https://127\\.") | not)) | .server[8:]'
+}
+# Make sure the forwarder of the stored server exists and is healthy when that server is the Compose gateway. Idempotent: reuses a healthy
+# one, restores it after a restart or a daemon reboot.
+_ext_ensure_bridge() {
+  local file listen; file="$(_ext_file "$1")"; [ -f "${file}" ] || return 0
+  listen="$(_ext_bridge_listen "${file}" || true)"; [ -n "${listen}" ] || return 0
+  hostbridge_network && [ "${listen%:*}" = "${HB_GATEWAY}" ] || return 0     # not our gateway: a real remote address, never touched
+  hostbridge_ensure "${listen##*:}" || true                                   # the connectivity check below reports what remains
+}
+
+# Delete a cluster or user entry of the shared kubeconfig unless another attached context still uses it (two use cases may share one, e.g.
+# CRC's crc-admin and crc-developer contexts use the same cluster entry).
+_ext_drop() {   # <cluster|user> <name>
+  local used
+  used="$(KUBECONFIG="${EXTERNAL_SHARED}" kubectl config view --raw -o json 2>/dev/null | jq -r --arg k "$1" --arg n "$2" '[.contexts[]?.context[$k] | select(. == $n)] | length' || true)"
+  [ "${used:-0}" != 0 ] || KUBECONFIG="${EXTERNAL_SHARED}" kubectl config "delete-$1" "$2" >/dev/null 2>&1 || true
 }
 
 # Merge the imported context into the shared kubeconfig (idempotent; the shared current-context is never changed).
@@ -96,6 +122,7 @@ provider_create() {
   for name in "${@:2}"; do
     _ext_import_from_host "${name}"
     provider_connect "${name}"
+    _ext_ensure_bridge "${name}"
     _ext_check "${name}" || { provider_destroy "${name}" >/dev/null 2>&1 || true; die "External cluster ${name} is not usable (see above)"; }
   done
 }
@@ -120,16 +147,18 @@ provider_info() {
 # Stop: DETACH only. Removes the imported context from the container's shared kubeconfig; the credentials file is kept so that a
 # restart (including from the Web UI) works. The external cluster is not contacted, stopped or modified.
 provider_destroy() {
-  local name file ctx cluster user
+  local name file ctx cluster user listen
   for name in "$@"; do
     provider_require_managed_name "${name}"
     file="$(_ext_file "${name}")"
+    listen=""
     if [ -f "${file}" ]; then
+      listen="$(_ext_bridge_listen "${file}" || true)"
       IFS=$'\t' read -r ctx cluster user < <(_ext_names "${file}")
       KUBECONFIG="${EXTERNAL_SHARED}" kubectl config delete-context "${ctx}" >/dev/null 2>&1 || true
-      KUBECONFIG="${EXTERNAL_SHARED}" kubectl config delete-cluster "${cluster}" >/dev/null 2>&1 || true
-      KUBECONFIG="${EXTERNAL_SHARED}" kubectl config delete-user "${user}" >/dev/null 2>&1 || true
+      _ext_drop cluster "${cluster}"; _ext_drop user "${user}"
     fi
+    [ -z "${listen}" ] || hostbridge_release "${listen}"   # only the labelled forwarder, and only if no other attached use case needs it
     log_success "Detached ${name}: the external cluster was not touched"
   done
 }

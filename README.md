@@ -29,8 +29,6 @@ EDB products need a subscription token: `cp .env.example .env` and set `EDB_SUBS
 
 The next scenarios (`02_…`, `03_…`) are in the same directory, in order.
 
-**Starting a use case can be cancelled:** while it is starting, its button becomes **Cancel**; it ends the start and runs the normal Stop (the use case's own clusters are deleted, an external cluster is only detached). `./playground doctor` also checks host resources (disk, inodes, memory, inotify, open files) and prints manual corrections; the same checks feed the Disk figure and the warning marker of the resource bar (click it for the details and copyable corrections), and the warnings of a use case start. When host resources show a warning or critical finding, starting a use case asks for confirmation first (`Continue anyway? [y/N]` in the CLI, `--yes` without a terminal; a dialog in the Web UI); declining starts nothing. Nothing is ever changed on your machine for you.
-
 ## Clean up
 
 ```bash

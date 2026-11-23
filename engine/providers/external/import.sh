@@ -5,7 +5,9 @@
 #   * exactly the configured context, with its original names, TLS settings and credentials;
 #   * an authentication plugin (exec) that is missing in this image is reported, nothing is installed;
 #   * if the API address does not work from inside Docker (api.crc.testing -> 127.0.0.1 is the container itself), it is tested again
-#     through host.docker.internal with tls-server-name set to the original host, so TLS verification stays on.
+#     through host.docker.internal with tls-server-name set to the original host, so TLS verification stays on;
+#   * on native Linux Docker (host.docker.internal does not exist) a loopback-only API is reached through a labelled socat forwarder
+#     bound to the Compose gateway (host-bridge.sh), again with tls-server-name set to the original host.
 set -Eeuo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 source "${PROJECT_ROOT}/engine/lib/logger.sh"
@@ -51,6 +53,17 @@ if [ "${state}" = down ]; then
   KUBECONFIG="${alt}" kubectl config set-cluster "${cluster}" --server="https://host.docker.internal:${port}" --tls-server-name="${host}" >/dev/null
   alt_state="$(probe "${alt}")"
   if [ "${alt_state}" != down ]; then mv "${alt}" "${tmp}"; state="${alt_state}"; rewritten="https://host.docker.internal:${port} (TLS name ${host})"; else rm -f "${alt}"; fi
+  # Native Linux Docker only (Docker Desktop always resolves host.docker.internal, so macOS never gets here): forwarder on the gateway.
+  if [ "${state}" = down ] && ! getent hosts host.docker.internal >/dev/null 2>&1; then
+    source "${PROJECT_ROOT}/engine/providers/external/host-bridge.sh"
+    if hostbridge_is_loopback "${host}" && hostbridge_ensure "${port}"; then
+      alt="$(mktemp)"; cp "${tmp}" "${alt}"
+      KUBECONFIG="${alt}" kubectl config set-cluster "${cluster}" --server="https://${HB_GATEWAY}:${port}" --tls-server-name="${host}" >/dev/null
+      alt_state="$(probe "${alt}")"
+      if [ "${alt_state}" != down ]; then mv "${alt}" "${tmp}"; state="${alt_state}"; rewritten="https://${HB_GATEWAY}:${port} (TLS name ${host}, through the host forwarder)"
+      else rm -f "${alt}"; hostbridge_release "${HB_GATEWAY}:${port}"; fi   # the cluster is not answering: keep nothing that nothing uses
+    fi
+  fi
 fi
 
 # Never carry a current-context: the shared one is not ours to change.
@@ -62,5 +75,5 @@ log_success "Imported context '${want}' for use case ${usecase} (server ${rewrit
 case "${state}" in
   ok)   log_success "The API answers from the Playground container and TLS is verified" ;;
   auth) log_warn "The API answers, but the credentials were refused (expired token?). Log in again on the host, then rerun ./playground usecase start ${usecase}" ;;
-  down) log_warn "The API at ${server} is not reachable from the Playground container (neither directly nor through host.docker.internal). Nothing was changed on the cluster, Docker or the host." ;;
+  down) log_warn "The API at ${server} is not reachable from the Playground container (neither directly, nor through host.docker.internal, nor through a host forwarder). Nothing was changed on the cluster, Docker or the host." ;;
 esac

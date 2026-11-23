@@ -5,6 +5,7 @@
 #  2. The external provider: context resolution, never creates, detach-only stop, name protection, no stack/scenario on start.
 #  3. import.sh: only the configured context is accepted; a missing authentication plugin is reported.
 #  4. ./playground doctor: the CRC line is informational and never changes the result.
+#  5. Linux host forwarder (host-bridge.sh): socat container bound to the Compose gateway (fake docker/getent/kubectl); macOS path unchanged.
 # Needs Bash >= 4: on a host with Bash 3.2 this file re-runs itself inside the running Playground container (section 4 then runs on the host side).
 # Run: tests/external.sh
 FAIL=0
@@ -130,7 +131,7 @@ out="$(cd "${P}/repo" && PATH="${P}/repo/bin:${PATH}" bash engine/usecase-run.sh
 check "usecase start (generic engine): attaches and validates, installs no stack, calls no docker/kind/helm/crc" "$r" "${out##*$'\n'} | $(cat "${P}/forbidden.log")"
 out="$(cd "${P}/repo" && PATH="${P}/repo/bin:${PATH}" FORCE= bash engine/usecase-run.sh stop crc 2>&1 | sed 's/\x1b\[[0-9;]*m//g')"
 grep -q 'Detached' <<< "${out}" && ! grep -qi 'Delete these Kind' <<< "${out}" && [ ! -s "${P}/forbidden.log" ] && r=ok || r=bad; check "usecase stop (generic engine): detaches without any Kind deletion prompt" "$r" "${out}"
-! grep -nE '(^|[;&|(`$[:space:]])(docker|kind|crc|podman)[[:space:]]+(ps|inspect|exec|network|run|get|create|delete|export|load|start|stop|setup|cleanup)' engine/providers/external/*.sh | grep -vE '^[^:]*:[0-9]+:[[:space:]]*#' | grep -q . && r=ok || r=bad; check "the external provider never calls kind, docker or a crc lifecycle command" "$r" ""
+! grep -nE '(^|[;&|(`$[:space:]])(docker|kind|crc|podman)[[:space:]]+(ps|inspect|exec|network|run|get|create|delete|export|load|start|stop|setup|cleanup)' $(ls engine/providers/external/*.sh | grep -v host-bridge.sh) | grep -vE '^[^:]*:[0-9]+:[[:space:]]*#' | grep -q . && r=ok || r=bad; check "the external provider never calls kind, docker or a crc lifecycle command (only host-bridge.sh uses docker, section 5)" "$r" ""
 
 # --- 3. import.sh ---------------------------------------------------------------------------------------------------------------
 imp() { ( cd "${P}/repo" && PATH="${P}/repo/bin:${PATH}" bash engine/providers/external/import.sh "$@" 2>&1 ); }
@@ -144,6 +145,140 @@ rm -f "${HOME}/.kube/external/crc.yaml"
 out="$("${REAL_KUBECTL}" --kubeconfig "${P}/exec.yaml" config view --raw --minify --context crc-admin | imp crc)"
 grep -q "aws-not-installed.*not installed" <<< "${out}" && [ ! -f "${HOME}/.kube/external/crc.yaml" ] && r=ok || r=bad; check "import: a missing authentication plugin is reported clearly, nothing is imported" "$r" "${out}"
 out="$(printf 'apiVersion: v1\nkind: Config\n' | imp crc)"; grep -q "Expected exactly the context 'crc-admin'" <<< "${out}" && r=ok || r=bad; check "import refuses a kubeconfig without exactly the configured context" "$r" "${out}"
+
+# --- 5. Linux host forwarder (host-bridge.sh) --------------------------------------------------------------------------------
+H="${P}/hb"; mkdir -p "${H}/bin" "${H}/state/c"; export HB_STATE="${H}/state"
+GETENT_REAL="$(command -v getent || echo /usr/bin/getent)"
+cat > "${H}/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+S="${HB_STATE}"; echo "$*" >> "${S}/docker.log"
+case "$1" in
+  network) [ -f "${S}/network.json" ] && cat "${S}/network.json" || exit 1 ;;
+  inspect) f="${S}/c/$2.json"; [ -f "${f}" ] && cat "${f}" || exit 1 ;;
+  logs) echo "socat: Address already in use" ;;
+  rm) rm -f "${S}/c/${3}.json" ;;
+  run)
+    shift; name=""; labels=()
+    while [ $# -gt 0 ]; do case "$1" in
+      --name) name="$2"; shift 2 ;; --label) labels+=("$2"); shift 2 ;;
+      --restart|--network|--cap-drop|--cap-add|--security-opt|--pids-limit|--memory) shift 2 ;;
+      -d|--read-only) shift ;; *) break ;; esac; done
+    image="$1"; shift; cmd="$*"
+    [ ! -f "${S}/c/${name}.json" ] || { echo "Conflict: name in use" >&2; exit 125; }
+    running=true; [ -z "${FAKE_RUN_DEAD:-}" ] || running=false
+    case "${cmd}" in *so-bindtodevice*) [ -z "${FAKE_DEV_FAIL:-}" ] || running=false ;; esac
+    l="$(printf '%s\n' "${labels[@]}" | jq -R 'split("=") | {(.[0]): (.[1:] | join("="))}' | jq -s add)"
+    jq -n --argjson l "${l}" --arg i "${image}" --argjson r "${running}" '[{State:{Running:$r},RestartCount:0,Config:{Image:$i,Labels:$l}}]' > "${S}/c/${name}.json"
+    echo "container-id" ;;
+esac
+exit 0
+EOF
+cat > "${H}/bin/getent" <<EOF
+#!/bin/sh
+case "\$1 \$2" in
+  "hosts host.docker.internal") [ -n "\${FAKE_HDI:-}" ] && { echo "192.168.65.254 host.docker.internal"; exit 0; }; exit 2 ;;
+  "ahostsv4 api.crc.testing") echo "127.0.0.1 STREAM api.crc.testing"; exit 0 ;;
+  "ahostsv4 remote.example.com") echo "203.0.113.9 STREAM remote.example.com"; exit 0 ;;
+esac
+exec "${GETENT_REAL}" "\$@"
+EOF
+cat > "${H}/bin/kubectl" <<EOF
+#!/bin/sh
+case " \$* " in *" config "*) exec "${REAL_KUBECTL}" "\$@" ;; esac
+case " \$* " in *"get --raw /readyz"*)
+  ctx=""; prev=""; for a in "\$@"; do [ "\$prev" = --context ] && ctx="\$a"; prev="\$a"; done
+  server="\$("${REAL_KUBECTL}" config view --minify --context "\$ctx" -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null)"
+  printf '%s' "\${server}" | grep -Eq "\${FAKE_OK_SERVER:-^\$}" && { echo ok; exit 0; }
+  echo "dial tcp: connection refused" >&2; exit 1 ;;
+esac
+exit 0
+EOF
+chmod +x "${H}"/bin/*
+cat > "${H}/state/network.json" <<'EOF'
+[{"Id":"0123456789abcdef0123","Options":{},"IPAM":{"Config":[{"Subnet":"172.22.0.0/16","Gateway":"172.22.0.1"}]}}]
+EOF
+cat > "${H}/host-kc.yaml" <<'KC'
+apiVersion: v1
+kind: Config
+clusters: [{name: "api-crc-testing:6443", cluster: {server: "https://api.crc.testing:6443"}}]
+users: [{name: u1, user: {token: tok-secret-1}}, {name: u2, user: {token: tok-secret-2}}]
+contexts: [{name: crc-admin, context: {cluster: "api-crc-testing:6443", user: u1}}, {name: crc2-admin, context: {cluster: "api-crc-testing:6443", user: u2}}]
+KC
+mk crc2 'name: crc2\ndescription: second use case on the same CRC\nprovider:\n  type: external\n  name: openshift\n  context: crc2-admin\n'
+cp -R engine/. "${P}/repo/engine/"
+export HOSTBRIDGE_PROBE_CMD=true HOSTBRIDGE_WAIT_TICKS=3
+hbreset() { rm -rf "${H}/state/c" "${H}/state/docker.log"; mkdir -p "${H}/state/c"; : > "${H}/state/docker.log"; rm -f "${HOME}/.kube/external/"*.yaml; rm -f "${HOME}/.kube/config"; : > "${HOME}/.kube/config"; }
+hb() { ( cd "${P}/repo" && PATH="${H}/bin:${P}/repo/bin:${PATH}" EXTERNAL_HOST_KUBECONFIG="${HB_KC:-${H}/host-kc.yaml}" PLAYGROUND_PROVIDER=external bash -c "source engine/lib/provider.sh; $*" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' ); }
+dlog() { cat "${H}/state/docker.log"; }
+stored_server() { "${REAL_KUBECTL}" --kubeconfig "${HOME}/.kube/external/$1.yaml" config view --raw -o jsonpath='{.clusters[0].cluster.server} {.clusters[0].cluster.tls-server-name}'; }
+export FAKE_OK_SERVER='^https://172\.22\.0\.1:6443$'
+
+# Linux, loopback-only API: the forwarder is started with the exact security properties, kubeconfig rewritten, TLS name kept.
+hbreset; out="$(hb 'provider_create 1 ext-crc-1; echo rc=$?')"
+run1="$(dlog | grep '^run ')"
+[ "$(stored_server crc)" = "https://172.22.0.1:6443 api.crc.testing" ] && grep -qx 'rc=0' <<< "${out}" && grep -q 'reachable, TLS verified' <<< "${out}" && r=ok || r=bad
+check "Linux + loopback-only API: server rewritten to the Compose gateway with the original TLS name, TLS verified, start succeeds" "$r" "$(stored_server crc) | ${out}"
+grep -q -- '--network host' <<< "${run1}" && grep -q 'alpine/socat@sha256:[0-9a-f]\{64\}' <<< "${run1}" && grep -q -- '--name cnpg-extproxy-6443' <<< "${run1}" && grep -q 'TCP4-LISTEN:6443,bind=172.22.0.1,so-bindtodevice=br-0123456789ab,fork,reuseaddr TCP4:127.0.0.1:6443' <<< "${run1}" && r=ok || r=bad
+check "forwarder: host network, image pinned by digest, listens on the gateway only, bound to the bridge interface, targets 127.0.0.1" "$r" "${run1}"
+! grep -q '0\.0\.0\.0' <<< "$(dlog)" && ! grep -q 'bind=,\|bind=0' <<< "${run1}" && r=ok || r=bad; check "the listener is never 0.0.0.0" "$r" "${run1}"
+grep -q -- '--label io.cnpg-playground.owner=cnpg-operator-playground' <<< "${run1}" && grep -q -- '--label io.cnpg-playground.role=external-proxy' <<< "${run1}" && grep -q -- '--label io.cnpg-playground.listen=172.22.0.1:6443' <<< "${run1}" && grep -q -- '--restart unless-stopped' <<< "${run1}" && grep -q -- '--cap-drop ALL' <<< "${run1}" && grep -q -- '--read-only' <<< "${run1}" && r=ok || r=bad
+check "forwarder: explicit ownership labels, restart unless-stopped (restored after a daemon restart), dropped capabilities, read-only" "$r" "${run1}"
+! grep -q 'tok-secret' <<< "${out}" && r=ok || r=bad; check "no credential is printed" "$r" ""
+
+# Reuse + a second use case on the same endpoint (CRC's contexts share one cluster entry): one forwarder, no recreation.
+out="$(hb 'provider_create 1 ext-crc2-1; echo rc=$?')"
+[ "$(dlog | grep -c '^run ')" = 1 ] && ! dlog | grep -q '^rm ' && grep -q 'Reusing the host forwarder' <<< "${out}" && grep -qx 'rc=0' <<< "${out}" && r=ok || r=bad
+check "a second use case on the same endpoint reuses the healthy forwarder (no run, no rm)" "$r" "${out} | $(dlog | grep -E '^(run|rm)')"
+out="$(hb 'provider_create 1 ext-crc-1 >/dev/null; echo rc=$?')"; [ "$(dlog | grep -c '^run ')" = 1 ] && ! dlog | grep -q '^rm ' && r=ok || r=bad; check "restarting an attached use case never recreates a healthy forwarder" "$r" "$(dlog | grep -E '^(run|rm)')"
+out="$(hb 'provider_destroy ext-crc-1; provider_list crc2')"
+! dlog | grep -q '^rm ' && grep -q 'stays: another external use case still uses it' <<< "${out}" && grep -qx 'ext-crc2-1' <<< "${out}" && r=ok || r=bad
+check "detaching one of two use cases keeps the forwarder and the other use case's shared cluster entry" "$r" "${out} | $(dlog | grep '^rm ')"
+out="$(hb 'provider_destroy ext-crc2-1')"
+dlog | grep -q '^rm -f cnpg-extproxy-6443$' && [ "$(dlog | grep -c '^rm ')" = 1 ] && grep -q 'forwarder cnpg-extproxy-6443 removed' <<< "${out}" && r=ok || r=bad
+check "detaching the last use case removes the forwarder (and only that container)" "$r" "${out} | $(dlog | grep '^rm ')"
+! dlog | grep -E '^(rm|run|stop|kill)' | grep -qv 'cnpg-extproxy-\|--name cnpg-extproxy' && r=ok || r=bad; check "docker is only asked to manage cnpg-extproxy-* containers (never CRC)" "$r" "$(dlog | grep -E '^(rm|run|stop|kill)')"
+
+# Restart restore: the forwarder vanished (daemon reboot, manual removal) while the use case stays attached -> recreated on start.
+hbreset; hb 'provider_create 1 ext-crc-1' >/dev/null; rm -f "${H}/state/c/cnpg-extproxy-6443.json"; : > "${H}/state/docker.log"
+out="$(HB_KC=/nonexistent hb 'provider_create 1 ext-crc-1; echo rc=$?')"
+[ "$(dlog | grep -c '^run ')" = 1 ] && grep -qx 'rc=0' <<< "${out}" && r=ok || r=bad; check "a vanished forwarder is restored by start, from the stored credentials alone (no host kubeconfig needed)" "$r" "${out}"
+# Stale (wrong listen label / not running) is replaced, not reused.
+jq '.[0].State.Running=false' "${H}/state/c/cnpg-extproxy-6443.json" > "${H}/x" && mv "${H}/x" "${H}/state/c/cnpg-extproxy-6443.json"; : > "${H}/state/docker.log"
+hb 'provider_create 1 ext-crc-1' >/dev/null; dlog | grep -q '^rm -f cnpg-extproxy-6443' && [ "$(dlog | grep -c '^run ')" = 1 ] && r=ok || r=bad; check "a stopped forwarder is replaced" "$r" "$(dlog | grep -E '^(run|rm)')"
+
+# Interface binding unavailable: still bound to the gateway only, with a warning.
+hbreset; out="$(FAKE_DEV_FAIL=1 hb 'provider_create 1 ext-crc-1; echo rc=$?')"
+grep -q 'TCP4-LISTEN:6443,bind=172.22.0.1,fork,reuseaddr' <<< "$(dlog | grep '^run ' | tail -1)" && ! dlog | grep '^run ' | tail -1 | grep -q so-bindtodevice && grep -q 'Could not bind the forwarder to the interface' <<< "${out}" && grep -qx 'rc=0' <<< "${out}" && r=ok || r=bad
+check "bridge-interface binding unavailable: retried on the gateway address only, with a warning" "$r" "${out}"
+
+# Failure paths: nothing is left behind, the original server is kept, TLS is never disabled.
+hbreset; out="$(FAKE_RUN_DEAD=1 hb 'provider_create 1 ext-crc-1; echo rc=$?')"
+! grep -qx 'rc=0' <<< "${out}" && grep -q 'did not become usable on 172.22.0.1:6443' <<< "${out}" && grep -q 'ufw' <<< "${out}" && [ -z "$(ls "${H}/state/c")" ] && r=ok || r=bad
+check "a forwarder that cannot listen is reported (firewall hint, nothing applied), removed again, and start fails" "$r" "${out}"
+hbreset; mkdir -p "${H}/state/c"; echo '[{"State":{"Running":true},"RestartCount":0,"Config":{"Image":"x","Labels":{}}}]' > "${H}/state/c/cnpg-extproxy-6443.json"
+out="$(hb 'provider_create 1 ext-crc-1; echo rc=$?')"
+! dlog | grep -q '^rm ' && ! dlog | grep -q '^run ' && grep -q 'is not a Playground forwarder: it was left alone' <<< "${out}" && r=ok || r=bad; check "a container with the forwarder's name but without the Playground labels is never touched" "$r" "${out}"
+hbreset; mv "${H}/state/network.json" "${H}/state/network.bak"; out="$(hb 'provider_create 1 ext-crc-1; echo rc=$?')"; mv "${H}/state/network.bak" "${H}/state/network.json"
+! dlog | grep -q '^run ' && ! grep -qx 'rc=0' <<< "${out}" && r=ok || r=bad; check "no usable gateway: no forwarder is started" "$r" "${out}"
+sed 's/"Gateway":"172.22.0.1"/"Gateway":"0.0.0.0"/' "${H}/state/network.json" > "${H}/state/network.bad"; cp "${H}/state/network.json" "${H}/state/network.ok"; cp "${H}/state/network.bad" "${H}/state/network.json"
+hbreset; out="$(hb 'provider_create 1 ext-crc-1; echo rc=$?')"; cp "${H}/state/network.ok" "${H}/state/network.json"
+! dlog | grep -q '^run ' && r=ok || r=bad; check "a 0.0.0.0 gateway is refused" "$r" "$(dlog | grep '^run ')"
+# Not a loopback endpoint: never forwarded.
+hbreset; sed 's#https://api.crc.testing:6443#https://remote.example.com:6443#' "${H}/host-kc.yaml" > "${H}/remote-kc.yaml"
+out="$(HB_KC="${H}/remote-kc.yaml" hb 'provider_create 1 ext-crc-1; echo rc=$?')"
+! dlog | grep -q '^run ' && [ "$(stored_server crc | cut -d' ' -f1)" = "https://remote.example.com:6443" ] && r=ok || r=bad; check "a non-loopback unreachable API is not forwarded (server kept as is)" "$r" "$(stored_server crc)"
+
+# macOS / Docker Desktop: host.docker.internal resolves -> the Linux path is never taken.
+hbreset; out="$(FAKE_HDI=1 FAKE_OK_SERVER='^https://host\.docker\.internal:6443$' hb 'provider_create 1 ext-crc-1; echo rc=$?')"
+[ "$(stored_server crc)" = "https://host.docker.internal:6443 api.crc.testing" ] && grep -qx 'rc=0' <<< "${out}" && ! dlog | grep -q . && r=ok || r=bad
+check "macOS: host.docker.internal is used exactly as before and docker is never called" "$r" "$(stored_server crc) | $(dlog)"
+hbreset; out="$(FAKE_HDI=1 FAKE_OK_SERVER='^$' hb 'provider_create 1 ext-crc-1; echo rc=$?')"
+! dlog | grep -q . && [ "$(stored_server crc)" = "https://api.crc.testing:6443 " ] && r=ok || r=bad; check "macOS with CRC stopped: original server kept, no forwarder, docker never called" "$r" "$(stored_server crc) | $(dlog)"
+# Direct connectivity (e.g. CRC in system mode, reachable from the container): untouched, no forwarder.
+hbreset; out="$(FAKE_OK_SERVER='^https://api\.crc\.testing:6443$' hb 'provider_create 1 ext-crc-1; echo rc=$?')"
+! dlog | grep -q . && grep -qx 'rc=0' <<< "${out}" && r=ok || r=bad; check "an API that already answers directly keeps its server and starts no forwarder" "$r" "${out}"
+! grep -q 'docker\.sock' engine/providers/external/host-bridge.sh && grep -q 'so-bindtodevice' engine/providers/external/host-bridge.sh && ! grep -qE 'iptables|nft |ufw (allow|enable)|sysctl|route_localnet' <(grep -vE '^[[:space:]]*#' engine/providers/external/host-bridge.sh | grep -v 'log_error') && r=ok || r=bad
+check "host-bridge.sh changes no firewall rule, route or sysctl (the ufw text is only part of an error message)" "$r" ""
 
 [ -n "${SKIP_DOCTOR:-}" ] || doctor_tests
 exit "${FAIL}"

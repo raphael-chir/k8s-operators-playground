@@ -28,6 +28,7 @@ case "$1" in
   exec) case "$*" in *pgrep*) [ "${FAKE_SESSIONS:-0}" -gt 0 ] && printf '41\n42\n' ;; esac ;;
   ps)
     case "$*" in
+      *"-q"*label=io.cnpg-playground.role=external-proxy*) [ "${FAKE_PROXIES:-0}" = 1 ] && echo px1 ;;
       *"-q"*label=io.x-k8s.kind.cluster=cnpg-lab-cnpg-standard-1*) printf 'id1\nid2\n' ;;
       *"-q"*) : ;;
       *label=io.x-k8s.kind.cluster*)
@@ -202,4 +203,13 @@ OUT="$(PLAYGROUND_BIND_ADDRESS=0.0.0.0 PLAYGROUND_WAIT_TIMEOUT=1 PLAYGROUND_CONT
 grep -q 'PLAYGROUND_BIND_ADDRESS 0.0.0.0' <<< "${OUT}" && grep -q 'SECTION.*CNPG Operator Playground' <<< "${OUT}" && r=ok || r=bad; check "start on its own keeps its banner and its bind warning" "$r" "${OUT}"
 grep -q 'log_success "Playground ready!"$' 00-provision.sh && ! grep -q 'Next: ./playground start' 00-provision.sh && [ "$(tail -1 00-provision.sh | grep -c 'doctor --recommendations')" = 1 ] && r=ok || r=bad; check "00-provision.sh: 'Playground ready!', no 'Next:', recommendations last" "$r"
 grep -q "doctor$" 00-provision.sh && r=bad || r=ok; check "00-provision.sh no longer runs doctor twice (install runs it once)" "$r"
+# --- external-cluster forwarders (Linux socat containers, found by their labels only) ---------------------------------
+: > "${LOG}"; FAKE_PROXIES=1 run cli purge --dry-run
+grep -q "External-cluster forwarders.*: 1 " <<< "${OUT}" && ! grep -qE "docker rm" "${LOG}" && r=ok || r=bad; check "purge --dry-run lists the forwarders and removes nothing" "$r" "${OUT}"
+: > "${LOG}"; FAKE_PROXIES=1 run cli purge --yes
+grep -q "docker ps -a -q --filter label=io.cnpg-playground.role=external-proxy --filter label=io.cnpg-playground.owner=cnpg-operator-playground" "${LOG}" && grep -q "docker rm -f px1$" "${LOG}" && r=ok || r=bad; check "purge --yes removes the forwarders, selected by both explicit labels" "$r" "$(calls | grep -E 'proxy|px1')"
+: > "${LOG}"; FAKE_PROXIES=1 run cli uninstall --yes
+grep -q "docker rm -f px1$" "${LOG}" && ! grep -q "docker rm -f -v" "${LOG}" && r=ok || r=bad; check "uninstall --yes removes the forwarders (they die with the Compose network) but no cluster" "$r" "$(calls | grep -E 'rm')"
+: > "${LOG}"; run cli uninstall --yes
+! grep -q "docker rm" "${LOG}" && r=ok || r=bad; check "without forwarders, uninstall runs no docker rm" "$r" "$(calls | grep rm)"
 echo; [ "${FAIL}" = 0 ] && echo "ALL CLI TESTS PASSED" || echo "SOME CLI TESTS FAILED"; exit "${FAIL}"
