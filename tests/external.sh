@@ -154,7 +154,10 @@ cat > "${H}/bin/docker" <<'EOF'
 S="${HB_STATE}"; echo "$*" >> "${S}/docker.log"
 case "$1" in
   network) [ -f "${S}/network.json" ] && cat "${S}/network.json" || exit 1 ;;
-  inspect) f="${S}/c/$2.json"; [ -f "${f}" ] && cat "${f}" || exit 1 ;;
+  inspect) shift; [ "${1:-}" != --type ] || shift 2   # like the real CLI: a missing container prints "[]" on stdout AND fails with "No such object"
+    [ -z "${FAKE_DAEMON_DOWN:-}" ] || { echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" >&2; exit 1; }
+    [ -z "${FAKE_INSPECT_RAW:-}" ] || { printf '%s\n' "${FAKE_INSPECT_RAW}"; exit 0; }
+    f="${S}/c/$1.json"; [ -f "${f}" ] && cat "${f}" || { echo "[]"; echo "Error: No such object: $1" >&2; exit 1; } ;;
   logs) echo "socat: Address already in use" ;;
   rm) rm -f "${S}/c/${3}.json" ;;
   run)
@@ -258,6 +261,36 @@ check "a forwarder that cannot listen is reported (firewall hint, nothing applie
 hbreset; mkdir -p "${H}/state/c"; echo '[{"State":{"Running":true},"RestartCount":0,"Config":{"Image":"x","Labels":{}}}]' > "${H}/state/c/cnpg-extproxy-6443.json"
 out="$(hb 'provider_create 1 ext-crc-1; echo rc=$?')"
 ! dlog | grep -q '^rm ' && ! dlog | grep -q '^run ' && grep -q 'is not a Playground forwarder: it was left alone' <<< "${out}" && r=ok || r=bad; check "a container with the forwarder's name but without the Playground labels is never touched" "$r" "${out}"
+# _hb_info regression: a missing container is "absent" (real docker prints [] and fails), any other failure is never read as absent.
+hbreset; out="$(hb '_hb_info cnpg-extproxy-6443; echo "rc=$? info=[${HB_INFO}]"')"
+grep -qx 'rc=0 info=\[\]' <<< "${out}" && r=ok || r=bad; check "_hb_info: a nonexistent container is empty (no 'null|null' record), rc 0" "$r" "${out}"
+hbreset; out="$(hb 'provider_create 1 ext-crc-1; echo rc=$?')"
+grep -qx 'rc=0' <<< "${out}" && ! grep -q 'not a Playground forwarder' <<< "${out}" && [ "$(dlog | grep -c '^run ')" = 1 ] && ! dlog | grep -q '^rm ' && r=ok || r=bad
+check "no proxy container yet: it is created (never reported as 'not a Playground forwarder')" "$r" "${out}"
+hbreset; hb 'provider_create 1 ext-crc-1' >/dev/null; out="$(hb '_hb_info cnpg-extproxy-6443; echo "$HB_INFO"')"
+grep -qx 'true|alpine/socat@sha256:[0-9a-f]*|172.22.0.1:6443|cnpg-operator-playground|external-proxy' <<< "${out}" && r=ok || r=bad; check "_hb_info: an owned running forwarder yields running|image|listen|owner|role" "$r" "${out}"
+hbreset; echo '[{"State":{"Running":true},"RestartCount":0,"Config":{"Image":"nginx","Labels":{"io.cnpg-playground.owner":"someone-else","io.cnpg-playground.role":"external-proxy"}}}]' > "${H}/state/c/cnpg-extproxy-6443.json"
+out="$(hb 'provider_create 1 ext-crc-1; echo rc=$?')"
+! dlog | grep -qE '^(rm|run) ' && grep -q 'is not a Playground forwarder: it was left alone' <<< "${out}" && ! grep -qx 'rc=0' <<< "${out}" && r=ok || r=bad
+check "a forwarder-named container owned by another application is left alone (no rm, no run)" "$r" "${out}"
+hbreset; hb 'provider_create 1 ext-crc-1' >/dev/null; : > "${H}/state/docker.log"; out="$(hb 'hostbridge_release 172.22.0.1:6443; echo rc=$?')"
+hbreset; hb 'provider_create 1 ext-crc-1' >/dev/null; jq '.[0].State.Running=false' "${H}/state/c/cnpg-extproxy-6443.json" > "${H}/x" && mv "${H}/x" "${H}/state/c/cnpg-extproxy-6443.json"; : > "${H}/state/docker.log"
+out="$(hb 'provider_create 1 ext-crc-1; echo rc=$?')"
+grep -qx 'rc=0' <<< "${out}" && dlog | grep -q '^rm -f cnpg-extproxy-6443$' && [ "$(dlog | grep -c '^run ')" = 1 ] && r=ok || r=bad; check "an owned but stopped forwarder is replaced by a running one" "$r" "${out}"
+hbreset; hb 'provider_create 1 ext-crc-1' >/dev/null; HOSTBRIDGE_PROBE_CMD=false HOSTBRIDGE_WAIT_TICKS=2 hb 'provider_create 1 ext-crc-1' >/dev/null; : > "${H}/state/docker.log"
+out="$(HOSTBRIDGE_PROBE_CMD=false HOSTBRIDGE_WAIT_TICKS=2 hb 'hostbridge_ensure 6443; echo rc=$?')"
+dlog | grep -q '^rm -f cnpg-extproxy-6443$' && ! grep -q 'Reusing' <<< "${out}" && r=ok || r=bad; check "an owned forwarder that does not answer (unhealthy) is not reused: it is replaced" "$r" "${out}"
+hbreset; hb 'provider_create 1 ext-crc-1' >/dev/null; : > "${H}/state/docker.log"
+out="$(FAKE_DAEMON_DOWN=1 hb 'hostbridge_ensure 6443; echo rc=$?')"
+! dlog | grep -qE '^(rm|run) ' && ! grep -qx 'rc=0' <<< "${out}" && grep -q 'Cannot inspect cnpg-extproxy-6443: .*Cannot connect to the Docker daemon' <<< "${out}" && ! grep -q 'not a Playground forwarder' <<< "${out}" && r=ok || r=bad
+check "Docker daemon unavailable: the real error is reported, nothing is created, replaced or removed" "$r" "${out}"
+out="$(FAKE_DAEMON_DOWN=1 hb 'hostbridge_release 172.22.0.1:6443; echo rc=$?')"
+! dlog | grep -qE '^(rm|run) ' && grep -qx 'rc=0' <<< "${out}" && grep -q 'left as is' <<< "${out}" && r=ok || r=bad; check "Docker daemon unavailable on release: warned, the container is not removed" "$r" "${out}"
+for raw in 'not json at all' '[]' '[null]' '{"State":{"Running":true}}' '[{"State":{"Running":"yes"},"Config":{"Image":"x"}}]' '[{"State":{"Running":true},"Config":{"Image":"x"}},{}]'; do
+  hbreset; out="$(FAKE_INSPECT_RAW="${raw}" hb 'hostbridge_ensure 6443; echo rc=$?')"
+  ! dlog | grep -qE '^(rm|run) ' && ! grep -qx 'rc=0' <<< "${out}" && grep -q 'unexpected docker inspect output' <<< "${out}" && r=ok || r=bad
+  check "malformed docker inspect output (${raw:0:40}) is an error: nothing created or removed, never 'absent'" "$r" "${out}"
+done
 hbreset; mv "${H}/state/network.json" "${H}/state/network.bak"; out="$(hb 'provider_create 1 ext-crc-1; echo rc=$?')"; mv "${H}/state/network.bak" "${H}/state/network.json"
 ! dlog | grep -q '^run ' && ! grep -qx 'rc=0' <<< "${out}" && r=ok || r=bad; check "no usable gateway: no forwarder is started" "$r" "${out}"
 sed 's/"Gateway":"172.22.0.1"/"Gateway":"0.0.0.0"/' "${H}/state/network.json" > "${H}/state/network.bad"; cp "${H}/state/network.json" "${H}/state/network.ok"; cp "${H}/state/network.bad" "${H}/state/network.json"

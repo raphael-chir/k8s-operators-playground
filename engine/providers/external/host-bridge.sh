@@ -43,10 +43,24 @@ hostbridge_is_loopback() {
   [ -n "${ips}" ] && ! grep -qv '^127\.' <<< "${ips}"
 }
 
-# "running|image|listen-label|owner-label|role-label" of a container, empty when it does not exist.
+# Inspect a container into HB_INFO = "running|image|listen-label|owner-label|role-label"; HB_INFO is empty when it does not exist.
+# Return 0: inspected, or definitely absent ("No such object"). Return 1 (HB_INFO empty, HB_ERR set): any other failure
+# (daemon unavailable, permission denied, malformed output): never read as "absent", so nothing is created, replaced or removed.
+# Not called in a subshell, so HB_INFO / HB_ERR survive. Note `docker inspect` of a missing name prints "[]" on stdout AND fails.
 _hb_info() {
-  docker inspect "$1" 2>/dev/null | jq -r '.[0] | [(.State.Running | tostring), .Config.Image, (.Config.Labels["io.cnpg-playground.listen"] // ""),
-    (.Config.Labels["io.cnpg-playground.owner"] // ""), (.Config.Labels["io.cnpg-playground.role"] // "")] | join("|")' 2>/dev/null || true
+  local out err rc
+  HB_INFO=""; HB_ERR=""
+  err="$(mktemp)" || { HB_ERR="mktemp failed"; return 1; }
+  out="$(docker inspect --type container "$1" 2>"${err}")"; rc=$?
+  if [ "${rc}" -ne 0 ]; then
+    if grep -qi 'no such \(object\|container\)' "${err}"; then rm -f "${err}"; return 0; fi
+    HB_ERR="docker inspect ${1} failed: $(tr '\n' ' ' < "${err}" | head -c 200)"; rm -f "${err}"; return 1
+  fi
+  rm -f "${err}"
+  HB_INFO="$(jq -er 'if (type == "array") and length == 1 and (.[0] | type == "object") and ((.[0].State.Running | type) == "boolean") and ((.[0].Config.Image | type) == "string") then
+      .[0] | [(.State.Running | tostring), .Config.Image, (.Config.Labels["io.cnpg-playground.listen"] // ""),
+      (.Config.Labels["io.cnpg-playground.owner"] // ""), (.Config.Labels["io.cnpg-playground.role"] // "")] | join("|") else empty end' <<< "${out}" 2>/dev/null)" ||
+    { HB_INFO=""; HB_ERR="unexpected docker inspect output for ${1}"; return 1; }
 }
 _hb_is_ours() { [ "$1" = "${HOSTBRIDGE_OWNER}" ] && [ "$2" = external-proxy ]; }
 
@@ -57,9 +71,9 @@ _hb_probe() {   # <port>: can the Playground container open the listener?
 _hb_stable() { docker inspect "$1" 2>/dev/null | jq -e '.[0] | .State.Running and ((.RestartCount // 0) == 0)' >/dev/null 2>&1; }
 
 _hb_healthy() {   # <name> <listen> <port>
-  local info running image lbl owner role
-  info="$(_hb_info "$1")"; [ -n "${info}" ] || return 1
-  IFS='|' read -r running image lbl owner role <<< "${info}"
+  local running image lbl owner role
+  _hb_info "$1" && [ -n "${HB_INFO}" ] || return 1
+  IFS='|' read -r running image lbl owner role <<< "${HB_INFO}"
   _hb_is_ours "${owner}" "${role}" && [ "${running}" = true ] && [ "${image}" = "${HOSTBRIDGE_IMAGE}" ] && [ "${lbl}" = "$2" ] && _hb_probe "$3"
 }
 
@@ -83,13 +97,13 @@ _hb_start() {   # <name> <port> <device or empty>: start, wait until it listens 
 
 # Make sure a healthy forwarder for <port> exists (reuse, else (re)create). Sets HB_GATEWAY. Logs; returns 1 when it cannot.
 hostbridge_ensure() {
-  local port="$1" name listen info running image lbl owner role dev
+  local port="$1" name listen running image lbl owner role dev
   [[ "${port}" =~ ^[0-9]{1,5}$ ]] || { log_error "Invalid port '${port}' for the host forwarder"; return 2; }
   hostbridge_network || { log_warn "Cannot read the gateway of the Docker network ${HOSTBRIDGE_NETWORK}: no host forwarder started"; return 1; }
   name="$(_hb_name "${port}")"; listen="${HB_GATEWAY}:${port}"
-  info="$(_hb_info "${name}")"
-  if [ -n "${info}" ]; then
-    IFS='|' read -r running image lbl owner role <<< "${info}"
+  _hb_info "${name}" || { log_error "Cannot inspect ${name}: ${HB_ERR}. No host forwarder started"; return 1; }
+  if [ -n "${HB_INFO}" ]; then
+    IFS='|' read -r running image lbl owner role <<< "${HB_INFO}"
     _hb_is_ours "${owner}" "${role}" || { log_error "A container named ${name} exists but is not a Playground forwarder: it was left alone"; return 1; }
     if _hb_healthy "${name}" "${listen}" "${port}"; then log_info "Reusing the host forwarder ${name} (${listen} -> 127.0.0.1:${port})"; return 0; fi
     docker rm -f "${name}" >/dev/null 2>&1 || { log_error "Could not replace the stale forwarder ${name}"; return 1; }
@@ -117,10 +131,11 @@ hostbridge_in_use() {   # <gateway:port> [kubeconfig]
 
 # Remove the forwarder of <gateway:port> when no attached use case needs it any more. Only an owned container with exactly that listen label.
 hostbridge_release() {   # <gateway:port>
-  local listen="$1" name info running image lbl owner role
+  local listen="$1" name running image lbl owner role
   name="$(_hb_name "${listen##*:}")"
-  info="$(_hb_info "${name}")"; [ -n "${info}" ] || return 0
-  IFS='|' read -r running image lbl owner role <<< "${info}"
+  _hb_info "${name}" || { log_warn "Host forwarder ${name} left as is: ${HB_ERR}"; return 0; }
+  [ -n "${HB_INFO}" ] || return 0
+  IFS='|' read -r running image lbl owner role <<< "${HB_INFO}"
   _hb_is_ours "${owner}" "${role}" && [ "${lbl}" = "${listen}" ] || return 0
   if hostbridge_in_use "${listen}" "${EXTERNAL_SHARED:-}"; then log_info "Host forwarder ${name} stays: another external use case still uses it"; return 0; fi
   docker rm -f "${name}" >/dev/null 2>&1 && log_success "Host forwarder ${name} removed (the external cluster itself was not touched)" || log_warn "Could not remove the host forwarder ${name}"
