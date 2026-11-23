@@ -3,7 +3,7 @@
 # engine/lib/logger.sh
 # Generic logging library (no Kind/Docker/Kubernetes knowledge): "[HH:MM:SS] [LEVEL] message".
 # Adapted from the previous project's lib/logger.sh (file logging, spinner and ERR trap dropped).
-# Source it; do not execute it. Colors only on a terminal (or with PLAYGROUND_FORCE_COLOR=1); NO_COLOR=1 or LOG_COLORS=false disables.
+# Bash 3.2 compatible (the host CLI sources it too). Source it; do not execute it. Colors only on a terminal (or with PLAYGROUND_FORCE_COLOR=1); NO_COLOR=1 or LOG_COLORS=false disables.
 # INFO/SUCCESS/SECTION/DEBUG go to stdout, WARN/ERROR to stderr.
 # -----------------------------------------------------------------------------
 
@@ -29,6 +29,14 @@ _logger_color_for() {
   esac
 }
 
+# Time of day for the line prefix, in _LOG_TS. Bash 4.2+ formats it itself (no process, the container's Bash 5); older Bash (the macOS /bin/bash 3.2,
+# which the host-side ./playground may run under) has no %(...)T and asks `date`. The line is the same either way.
+if [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 2 ]; }; then
+  _log_time() { printf -v _LOG_TS '%(%H:%M:%S)T' -1; }
+else
+  _log_time() { _LOG_TS="$(date +%H:%M:%S)"; }
+fi
+
 # Single emission point. $1=level, $2=fd, rest=message. Always returns 0 (safe under set -e).
 _log_emit() {
   local level="$1" fd="$2" color="" reset=""
@@ -40,7 +48,8 @@ _log_emit() {
     color="$(_logger_color_for "${level}")"
     reset="${_LOGGER_C_RESET}"
   fi
-  printf '%s[%(%H:%M:%S)T] %-9s %s%s\n' "${color}" -1 "[${level}]" "$*" "${reset}" >&"${fd}"
+  _log_time
+  printf '%s[%s] %-9s %s%s\n' "${color}" "${_LOG_TS}" "[${level}]" "$*" "${reset}" >&"${fd}"
   return 0
 }
 

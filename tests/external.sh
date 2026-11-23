@@ -17,8 +17,8 @@ D="$(mktemp -d)"; mkdir -p "${D}/with" "${D}/without"
 printf '#!/bin/sh\n[ "$1" = version ] && { echo "CRC version: 2.99.0+abcdef"; echo "OpenShift version: 4.22.0"; exit 0; }\necho "LIFECYCLE $*" >> "%s/crc.log"; exit 1\n' "${D}" > "${D}/with/crc"; chmod +x "${D}/with/crc"
 doc() { PATH="$1:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin" bash "${HOST_ROOT}/playground" doctor 2>&1 | sed 's/\x1b\[[0-9;]*m//g'; }
 w="$(doc "${D}/with")"; n="$(PATH="${D}/without:/usr/bin:/bin:/usr/sbin:/sbin" bash "${HOST_ROOT}/playground" doctor 2>&1 | sed 's/\x1b\[[0-9;]*m//g')"
-grep -qx '\[INFO\] OpenShift Local (CRC): installed (2.99.0)' <<< "${w}" && r=ok || r=bad; check "doctor: CRC installed -> '[INFO] OpenShift Local (CRC): installed (2.99.0)'" "$r" "$(grep -i crc <<< "${w}")"
-grep -qx '\[INFO\] OpenShift Local (CRC): not installed' <<< "${n}" && r=ok || r=bad; check "doctor: CRC absent -> '[INFO] OpenShift Local (CRC): not installed'" "$r" "$(grep -i crc <<< "${n}")"
+grep -qE '^\[[0-9:]{8}\] \[INFO\] +OpenShift Local \(CRC\): installed \(2.99.0\)$' <<< "${w}" && r=ok || r=bad; check "doctor: CRC installed -> '[INFO] OpenShift Local (CRC): installed (2.99.0)'" "$r" "$(grep -i crc <<< "${w}")"
+grep -qE '^\[[0-9:]{8}\] \[INFO\] +OpenShift Local \(CRC\): not installed$' <<< "${n}" && r=ok || r=bad; check "doctor: CRC absent -> '[INFO] OpenShift Local (CRC): not installed'" "$r" "$(grep -i crc <<< "${n}")"
 [ ! -e "${D}/crc.log" ] && r=ok || r=bad; check "doctor only asks crc for its version (no lifecycle command)" "$r" "$(cat "${D}/crc.log" 2>/dev/null)"
 rm -rf "${D}"
 }

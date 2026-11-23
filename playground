@@ -35,19 +35,24 @@ KIND_LABEL="io.x-k8s.kind.cluster"
 K3D_LABEL="k3d.cluster"                  # k3d marks every container (nodes, load balancer) of a cluster with this label
 
 # --- output ------------------------------------------------------------------------------------------------
-if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
-  C_OK=$'\033[32m'; C_WARN=$'\033[33m'; C_ERR=$'\033[31m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
-else
-  C_OK=""; C_WARN=""; C_ERR=""; C_DIM=""; C_OFF=""
-fi
-say()  { printf '%s\n' "$*"; }
-ok()   { printf '%s[OK]%s   %s\n' "${C_OK}" "${C_OFF}" "$*"; }
-warn() { printf '%s[WARN]%s %s\n' "${C_WARN}" "${C_OFF}" "$*"; }
-bad()  { printf '%s[FAIL]%s %s\n' "${C_ERR}" "${C_OFF}" "$*"; }
-err()  { printf '%sError:%s %s\n' "${C_ERR}" "${C_OFF}" "$*" >&2; }
-info() { printf '[INFO] %s\n' "$*"; }
-hint() { printf '       %s%s%s\n' "${C_DIM}" "$*" "${C_OFF}"; }
-banner() { say "CNPG Operator Playground v${VERSION}"; }
+# ONE style for the whole CLI, the engine's logger (engine/lib/logger.sh, Bash 3.2 compatible): "[HH:MM:SS] [LEVEL] message", same colors, same
+# level alignment. The short names below only map the CLI's wording onto its levels (no second logger, no other visual style):
+#   ok -> SUCCESS   say / info / hint -> INFO   warn -> WARN   bad / crit / err -> ERROR (stderr)   banner -> SECTION
+# raw prints unformatted text where a log line would be wrong: --version, usage lines and prompts.
+source "${ROOT}/engine/lib/logger.sh"
+OKS=0; QUIET_OK=0          # QUIET_OK=1 (doctor --compact): successful prerequisite lines are only counted
+BANNER_DONE="${PLAYGROUND_BANNER_DONE:-0}"   # 1: a wrapper (00-provision.sh) already showed the banner
+raw()  { printf '%s\n' "$*"; }
+say()  { [ -n "$*" ] || return 0; log_info "$*"; }           # blank spacer lines are dropped: the logger needs no separators
+ok()   { OKS=$((OKS + 1)); [ "${QUIET_OK}" = 1 ] || log_success "$*"; }
+warn() { log_warn "$*"; }
+crit() { log_error "$*"; }
+na()   { log_info "$*"; }
+bad()  { log_error "$*"; }
+err()  { log_error "$@"; }
+info() { log_info "$*"; }
+hint() { log_info "  $*"; }
+banner() { [ "${BANNER_DONE}" = 1 ] && return 0; BANNER_DONE=1; log_section "CNPG Operator Playground v${VERSION}"; }
 
 in_container() {
   case "${PLAYGROUND_CONTEXT:-}" in container) return 0 ;; host) return 1 ;; esac   # explicit override (tests)
@@ -79,7 +84,8 @@ Infrastructure (routed into the running Playground):
 
 Use cases (routed into the running Playground):
   usecase list                 List the use cases
-  usecase start NAME           Start a use case (create its clusters, monitoring and MinIO; no PostgreSQL operator).
+  usecase start NAME [--yes]   Start a use case (create its clusters, monitoring and MinIO; no PostgreSQL operator).
+                               Host resource warnings ask "Continue anyway? [y/N]"; --yes accepts them (needed without a terminal).
                                provider external: import the context from your kubeconfig and connect (nothing is created)
   usecase stop NAME [--force]  Stop a use case (delete its clusters; --force skips the confirmation).
                                provider external: only detaches, the cluster is never touched
@@ -128,7 +134,7 @@ resolve_bind() {
   case "${v}" in
     127.0.0.1) URL="http://localhost:${WEB_PORT}" ;;
     0.0.0.0)   URL="http://localhost:${WEB_PORT}"
-               [ -n "${BIND_WARNED-}" ] || warn "PLAYGROUND_BIND_ADDRESS 0.0.0.0: every network interface can reach the Playground terminal and the AI Builder. Prefer your LAN address."; BIND_WARNED=1 ;;
+               [ -n "${BIND_WARNED-}" ] || log_warn "PLAYGROUND_BIND_ADDRESS 0.0.0.0: every network interface can reach the Playground terminal and the AI Builder. Prefer your LAN address."; BIND_WARNED=1 ;;
     *)         URL="http://${v}:${WEB_PORT}" ;;
   esac
 }
@@ -220,10 +226,32 @@ owned_clusters() { owned_nodes | awk '{print $1}' | sort -u; }
 # =============================================================================================================
 # doctor
 # =============================================================================================================
+load_hostcheck() { [ -n "$(type -t hostcheck_collect)" ] || . "${ROOT}/engine/lib/hostcheck.sh"; }
+# One resource finding as a single aligned line (ERROR for CRITICAL, WARN for WARNING): title, first current value, then the impact.
+resource_line() {   # <record>
+  local rid rst rtitle rcur rrec rimpact; IFS='|' read -r rid rst rtitle rcur rrec rimpact _ <<< "$1"
+  local text; text="$(printf '%-24s %s' "${rtitle}" "${rcur%%;;*}")"
+  if [ "${rst}" = CRITICAL ]; then crit "${text}"; else warn "${text}"; fi
+  [ -z "${rimpact}" ] || hint "${rimpact}"
+}
+# The full block of `doctor` (current / recommended / impact / correction / restore), through the shared logger.
+resource_block() { hostcheck_log "$1"; }
+# "Resource health: all OK | 1 critical, 1 warning, 1 unavailable": the closing line of an installation (advisory).
+resource_health_line() {
+  load_hostcheck
+  say "Resource health: $(hostcheck_collect | hostcheck_summary)"
+}
+
+# doctor [--compact] [--summary]: prerequisites (blocking) and host resources (advisory, never changes the exit code).
+#   --compact  successful prerequisite lines are counted instead of listed (used by install);  --summary  only the one-line resource health.
 cmd_doctor() {
-  local fails=0 warns=0 os="" arch="" ver major info ncpu mem gib
-  banner; say "Prerequisites"; say
+  local fails=0 warns=0 os="" arch="" ver major info ncpu mem gib compact=0 summary=0
+  while [ $# -gt 0 ]; do case "$1" in --compact) compact=1 ;; --summary) summary=1 ;; *) err "Unknown option for doctor: $1"; return 2 ;; esac; shift; done
   if in_container; then err "doctor checks the host: run it outside the Playground container."; return 2; fi
+  if [ "${summary}" -eq 1 ]; then resource_health_line; return 0; fi
+  [ "${compact}" -eq 0 ] || QUIET_OK=1
+  OKS=0
+  banner; log_section "Prerequisites"
 
   # 1. operating system
   case "$(uname -s)" in
@@ -325,25 +353,28 @@ cmd_doctor() {
   if container_running && docker exec "${CONTAINER}" k3d version >/dev/null 2>&1; then info "k3d (provider.name k3d): available in the Playground image"
   else info "k3d (provider.name k3d): not in the running Playground image; optional, rebuild it with ./playground install to use it"; fi
 
-  # 12. host resources (engine/lib/hostcheck.sh, shared with the dashboard bar and the pre-provisioning check). Advisory only: never blocking,
-  # nothing is changed; corrections are printed for you to run.
-  say; say "Host resources"
-  # shellcheck source=engine/lib/hostcheck.sh
-  . "${ROOT}/engine/lib/hostcheck.sh"
-  local rec rid rst rtitle rcur
+  # 12. host resources (engine/lib/hostcheck.sh, shared with the dashboard bar and the pre-start confirmation). Advisory only: never blocking
+  # (the exit code ignores them), nothing is changed; corrections are printed for you to run.
+  [ "${compact}" -eq 0 ] || { say "Prerequisites: ${OKS} checks OK"; QUIET_OK=0; }
+  log_section "Host resources"
+  load_hostcheck
+  local recs rec rid rst rtitle rcur
+  recs="$(hostcheck_collect)"
   while IFS= read -r rec; do
     [ -n "${rec}" ] || continue
     IFS='|' read -r rid rst rtitle rcur _ <<< "${rec}"
     case "${rst}" in
-      OK) ok "${rtitle}: ${rcur}" ;;
-      UNAVAILABLE) info "${rtitle}: ${rcur}" ;;
-      *) warns=$((warns + 1)); hostcheck_text "${rec}" | sed "s/^\[/       [/; /^\[/!s/^/       /" ;;
+      OK) QUIET_OK=0; ok "$(printf '%-24s %s' "${rtitle}" "${rcur}")" ;;
+      UNAVAILABLE) na "$(printf '%-24s %s' "${rtitle}" "${rcur}")" ;;
+      *) if [ "${compact}" -eq 1 ]; then resource_line "${rec}"; else resource_block "${rec}"; fi ;;
     esac
-  done <<< "$(hostcheck_collect)"
+  done <<< "${recs}"
+  say "Resource health: $(hostcheck_summary <<< "${recs}")"
+  [ "${compact}" -eq 0 ] || say "Details and corrections: ./playground doctor"
 
   say
-  if [ "${fails}" -gt 0 ]; then say "${fails} blocking problem(s). Fix them and run ./playground doctor again."; return 1; fi
-  if [ "${warns}" -gt 0 ]; then say "Environment ready, with ${warns} warning(s)."; else say "Environment ready."; fi
+  if [ "${fails}" -gt 0 ]; then err "${fails} blocking problem(s). Fix them and run ./playground doctor again."; return 1; fi
+  if [ "${warns}" -gt 0 ]; then log_warn "Environment ready, with ${warns} warning(s)."; else log_success "Environment ready."; fi
   return 0
 }
 
@@ -352,16 +383,16 @@ cmd_doctor() {
 # =============================================================================================================
 cmd_install() {
   banner; say
-  cmd_doctor || { err "Prerequisites are not met; nothing was changed."; return 1; }
+  cmd_doctor --compact || { err "Prerequisites are not met; nothing was changed."; return 1; }
   say
   dc config -q || { err "compose.yaml is not valid."; return 1; }
-  ok "Docker Compose configuration is valid"
-  say "Building the Playground image (this can take a few minutes the first time)..."
+  log_success "Docker Compose configuration is valid"
+  log_info "Building the Playground image (this can take a few minutes the first time)..."
   dc build || { err "The image build failed."; return 1; }
-  ok "Playground image built"
+  log_success "Playground image built"
   say
-  say "Installed. No cluster and no use case was created."
-  say "Next: ./playground start"
+  log_info "Installed. No cluster and no use case was created."
+  log_info "Next: ./playground start"
 }
 
 # Host-side CPU/RAM sampler for the resource bar (engine/host-metrics.sh): the container cannot see the real host. One instance (pid file),
@@ -385,10 +416,10 @@ cmd_start() {
   need_docker || return 1
   if in_container; then err "start runs on the host."; return 2; fi
   dc up -d || { err "docker compose up failed."; return 1; }
-  ok "Playground started"
+  log_success "Playground started"
   host_metrics_start
   if wait_web; then
-    ok "Web UI ready"
+    log_success "Web UI ready"
     print_urls
   else
     err "The Web UI did not answer in time. Check: docker logs ${CONTAINER}"
@@ -400,13 +431,13 @@ cmd_stop() {
   banner
   need_docker || return 1
   dc --profile ai-builder stop || { err "docker compose stop failed."; return 1; }
-  ok "Playground stopped"
+  log_success "Playground stopped"
   host_metrics_stop
   local n
   n="$(owned_clusters | wc -l | tr -d ' ')"
-  say "Kind and k3d clusters are independent Docker containers and keep running (${n} found)."
-  say "Stop a use case before stopping the Playground to delete its clusters, or run ./playground purge."
-  say "Open terminals (one Bash each) end with the container; the clusters and volumes are kept."
+  log_info "Kind and k3d clusters are independent Docker containers and keep running (${n} found)."
+  log_info "Stop a use case before stopping the Playground to delete its clusters, or run ./playground purge."
+  log_info "Open terminals (one Bash each) end with the container; the clusters and volumes are kept."
 }
 
 cmd_restart() {
@@ -417,21 +448,21 @@ cmd_restart() {
   if container_running; then
     sessions="$(docker exec "${CONTAINER}" sh -c 'pgrep -P "$(pgrep -x ttyd | head -1)"' 2>/dev/null | wc -l | tr -d ' ')"
     if [ "${sessions}" -gt 0 ] && [ "${yes}" -eq 0 ]; then
-      warn "${sessions} open terminal(s) will be closed by the restart (their shell and running command end); open WebSocket connections are dropped."
+      log_warn "${sessions} open terminal(s) will be closed by the restart (their shell and running command end); open WebSocket connections are dropped."
       confirm "Restart the Playground?" || return 1
     fi
   fi
   resolve_bind || return $?
   if container_exists && ! docker port "${CONTAINER}" 8080/tcp 2>/dev/null | grep -q "^${BIND_ADDRESS}:"; then
     # The published address changed: restart keeps the old port bindings, so the container is recreated (volumes and clusters untouched).
-    say "PLAYGROUND_BIND_ADDRESS changed (${BIND_ADDRESS}): recreating the Playground container."
+    log_info "PLAYGROUND_BIND_ADDRESS changed (${BIND_ADDRESS}): recreating the Playground container."
     dc up -d --force-recreate || { err "docker compose up failed."; return 1; }
   else
     dc restart || { err "docker compose restart failed."; return 1; }
   fi
-  ok "Playground restarted (Kind clusters untouched)"
+  log_success "Playground restarted (Kind clusters untouched)"
   host_metrics_start
-  if wait_web; then ok "Web UI ready"; print_urls; else err "The Web UI did not answer in time."; return 1; fi
+  if wait_web; then log_success "Web UI ready"; print_urls; else err "The Web UI did not answer in time."; return 1; fi
 }
 
 cmd_status() {
@@ -454,7 +485,7 @@ cmd_status() {
     say "Clusters:       none (Kind or k3d)"
   else
     say "Clusters (Kind or k3d):"
-    printf '%s\n' "${nodes}" | awk '{n[$1]++; if ($2=="running") r[$1]++} END {for (c in n) printf "  %-48s %d/%d nodes running\n", c, r[c], n[c]}' | sort
+    printf '%s\n' "${nodes}" | awk '{n[$1]++; if ($2=="running") r[$1]++} END {for (c in n) printf "  %-48s %d/%d nodes running\n", c, r[c], n[c]}' | sort | log_stream
     say "Use cases:      $(owned_clusters | sed -E "s/^${PREFIX}-(.*)-[0-9]+$/\1/" | sort -u | tr '\n' ' ')"
   fi
 }
@@ -492,10 +523,10 @@ cmd_purge() {
   say "and by the Docker Compose project label '${PROJECT}'):"
   say
   say "  Kind and k3d clusters (all their nodes and the data inside):"
-  if [ -n "${clusters}" ]; then printf '%s\n' "${clusters}" | sed 's/^/    - /'; else say "    (none)"; fi
+  if [ -n "${clusters}" ]; then printf '%s\n' "${clusters}" | sed 's/^/    - /' | log_stream; else say "    (none)"; fi
   say "  Playground container: $(container_exists && echo "${CONTAINER}" || echo '(none)') (plus its Compose network and image)"
   say "  Docker volumes (kubeconfig, terminal state, shell history):"
-  if [ -n "${vols}" ]; then printf '%s\n' "${vols}" | sed 's/^/    - /'; else say "    (none)"; fi
+  if [ -n "${vols}" ]; then printf '%s\n' "${vols}" | sed 's/^/    - /' | log_stream; else say "    (none)"; fi
   say
   say "Never touched: other containers and clusters, the shared 'kind' and 'k3d-playground' networks, unrelated volumes and images,"
   say "the repository and your files. No 'docker system prune' or 'docker volume prune' is ever run."
@@ -558,7 +589,7 @@ container_infra() {
     down)        require_names "infra down" "$@" || return 1; bash "${run}" down "$@" ;;
     info)        bash "${run}" info "$@" ;;
     status)      bash "${run}" status "$@" ;;
-    ""|-h|--help|help) say "Usage: ./playground infra {up|platform-up|down|info|status} [CLUSTER...]"; [ -n "${sub}" ] ;;
+    ""|-h|--help|help) raw "Usage: ./playground infra {up|platform-up|down|info|status} [CLUSTER...]"; [ -n "${sub}" ] ;;
     *) err "Unknown infra command '${sub}'. Try: up, platform-up, down, info, status."; return 2 ;;
   esac
 }
@@ -592,7 +623,7 @@ container_usecase() {
         stop)   run_usecase_script "${name}" stop ;;
         status) run_usecase_script "${name}" status ;;
       esac ;;
-    ""|-h|--help|help) say "Usage: ./playground usecase {list|start NAME|stop NAME [--force]|status NAME}"; [ -n "${sub}" ] ;;
+    ""|-h|--help|help) raw "Usage: ./playground usecase {list|start NAME|stop NAME [--force]|status NAME}"; [ -n "${sub}" ] ;;
     *) err "Unknown usecase command '${sub}'. Try: list, start, stop, status."; return 2 ;;
   esac
 }
@@ -600,6 +631,23 @@ container_usecase() {
 # A value of the provider section of usecases/<name>/usecase.yaml (type | context); empty when absent.
 manifest_provider_value() {   # <name> <key>
   awk -v k="$2" '/^provider:[ ]*$/ { s = 1; next } /^[^ \t#]/ { s = 0 } s && $1 == k ":" { v = $2; gsub(/["\047]/, "", v); print v; exit }' "${ROOT}/usecases/$1/usecase.yaml" 2>/dev/null
+}
+
+# Host side of `usecase start` (before anything is provisioned): when the host has WARNING or CRITICAL resource findings, show them compactly and
+# ask "Continue anyway? [y/N]" (default No). Measured right now by the same checks as `doctor`, so no sampler file is involved. Without a terminal
+# `confirm` refuses (never waits for input): pass --yes. An external provider is not on this host: no check. Once accepted, nothing asks again
+# (the container-side preflight only logs). Returns 1 when declined or not confirmable: nothing was started.
+resource_gate() {   # <name> <yes: 0|1>
+  local name="$1" yes="$2" ptype recs rec
+  ptype="$(manifest_provider_value "${name}" type)"; [ "${ptype}" != external ] || return 0
+  load_hostcheck
+  recs="$(hostcheck_collect "${ptype:-internal}" | awk -F'|' '$2 == "WARNING" || $2 == "CRITICAL"')"
+  [ -n "${recs}" ] || return 0
+  say "Host resources: $(hostcheck_summary <<< "${recs}")"
+  while IFS= read -r rec; do resource_line "${rec}"; done <<< "${recs}"
+  say "Details and corrections: ./playground doctor"
+  if [ "${yes}" -eq 1 ]; then say "Continuing (--yes)."; return 0; fi
+  confirm "Continue anyway?" || { say "Nothing was started."; return 1; }
 }
 
 # External provider, host side of `usecase start`: copy ONLY the configured context (with its credentials, resolved through KUBECONFIG
@@ -768,7 +816,7 @@ main() {
   local cmd="${1:-help}"; [ $# -gt 0 ] && shift
   case "${cmd}" in
     -h|--help|help) usage; return 0 ;;
-    -V|--version|version) say "CNPG Operator Playground v${VERSION}"; return 0 ;;
+    -V|--version|version) raw "CNPG Operator Playground v${VERSION}"; return 0 ;;
     doctor|install|start|stop|restart|status|uninstall|purge)
       if in_container; then err "'${cmd}' runs on the host, not inside the Playground container."; return 2; fi
       "cmd_${cmd}" "$@" ;;
@@ -779,7 +827,14 @@ main() {
       case "${1:-}" in ""|-h|--help|help) "container_${cmd}" "$@"; return ;; esac   # usage needs no container
       if in_container; then "container_${cmd}" "$@"
       else
-        if [ "${cmd}" = usecase ] && [ "${1:-}" = start ] && [ -n "${2:-}" ]; then external_import "$2" || return $?; fi
+        if [ "${cmd}" = usecase ] && [ "${1:-}" = start ] && [ -n "${2:-}" ]; then
+          # --yes accepts the resource warnings (host only: it is not passed on, the container never prompts)
+          local yes=0 a rest=()
+          for a in "$@"; do case "${a}" in --yes|-y) yes=1 ;; *) rest+=("${a}") ;; esac; done
+          set -- "${rest[@]}"
+          resource_gate "${2:-}" "${yes}" || return $?
+          external_import "$2" || return $?
+        fi
         route_to_container "${cmd}" "$@"
       fi ;;
     *) err "Unknown command '${cmd}'."; say "Run ./playground --help" >&2; return 2 ;;

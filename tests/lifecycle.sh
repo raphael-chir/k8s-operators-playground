@@ -30,10 +30,8 @@ echo "k3d $*" >> "${CALLS}"
 STUB
 chmod +x "${T}/bin/"*; export PATH="${T}/bin:${PATH}"
 printf 'cnpg-lab-demo-1 aaa111\ncnpg-lab-demo-1 aaa222\ncnpg-lab-demo-2 bbb111\ncnpg-lab-other-1 ccc111\n' > "${T}/containers"; export FAKE_CONTAINERS="${T}/containers"
-# A temporary copy of engine/ whose logger prints the time with `date` (the real one uses printf %T, Bash 4): the code under test is otherwise identical.
-cp -R engine "${T}/engine"; sed -i.bak 's/%(%H:%M:%S)T/%s/; s/"\${color}" -1 /"${color}" "$(date +%H:%M:%S)" /' "${T}/engine/lib/logger.sh"
 removed() { grep '^docker rm -f' "${CALLS}" | sed 's/^docker rm -f //' | tr ' ' '\n' | sort | tr '\n' ' '; }
-KD="${T}/engine/providers/kind/down.sh"
+KD="engine/providers/kind/down.sh"
 
 # --- Kind: the cluster is not listed any more (creation killed): its labeled containers are removed, nothing else ---
 : > "${CALLS}"; FAKE_KIND_CLUSTERS="" bash "${KD}" cnpg-lab-demo-1 >/dev/null 2>&1; rc=$?
@@ -55,7 +53,7 @@ grep -q '^kind delete cluster --name cnpg-lab-demo-1' "${CALLS}" && r=ok || r=ba
 [ "${rc}" != 0 ] && [ -z "$(removed)" ] && r=ok || r=bad; check "Kind: a name with extra words is refused" "$r" "rc=${rc}"
 
 # --- k3d ---
-k3d_destroy() { ( cd "${T}" && PLAYGROUND_PROVIDER=k3d bash -c 'source engine/lib/provider.sh; provider_destroy "$@"' _ "$@" >/dev/null 2>&1 ); }
+k3d_destroy() { ( PLAYGROUND_PROVIDER=k3d bash -c 'source engine/lib/provider.sh; provider_destroy "$@"' _ "$@" >/dev/null 2>&1 ); }
 printf 'cnpg-lab-demo-1 k1\ncnpg-lab-demo-1 k2\ncnpg-lab-demo-1 k3\ncnpg-lab-other-1 z1\n' > "${T}/containers"
 if command -v jq >/dev/null 2>&1; then
   : > "${CALLS}"; FAKE_K3D_CLUSTERS="" k3d_destroy cnpg-lab-demo-1; rc=$?

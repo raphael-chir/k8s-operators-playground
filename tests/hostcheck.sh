@@ -55,7 +55,7 @@ fix="$(cut -d'|' -f7 <<< "${x}")"; restore="$(cut -d'|' -f8 <<< "${x}")"
 [ "${fix}" = "sudo sysctl -w fs.inotify.max_user_instances=8192;;sudo sysctl -w fs.inotify.max_user_watches=524288" ] && r=ok || r=bad; check "inotify correction = recommended values (8192 / 524288)" "$r" "${fix}"
 [ "${restore}" = "sudo sysctl -w fs.inotify.max_user_instances=128;;sudo sysctl -w fs.inotify.max_user_watches=65536" ] && r=ok || r=bad; check "inotify restore = the previous values" "$r" "${restore}"
 txt="$(run hostcheck_text "${x}")"
-grep -q '^\[WARNING\] Linux inotify limits' <<< "${txt}" && grep -q '^Impact:' <<< "${txt}" && grep -q '^  sudo sysctl -w fs.inotify.max_user_instances=8192' <<< "${txt}" && grep -q '^Restore the previous value:' <<< "${txt}" && r=ok || r=bad
+grep -q '^Warning: Linux inotify limits' <<< "${txt}" && grep -q '^Impact:' <<< "${txt}" && grep -q '^  sudo sysctl -w fs.inotify.max_user_instances=8192' <<< "${txt}" && grep -q '^Restore the previous value:' <<< "${txt}" && r=ok || r=bad
 check "the text block shows current / recommended / impact / correction / restore" "$r" "${txt}"
 echo 8192 > "${T}/proc/sys/fs/inotify/max_user_instances"; echo 20 > "${T}/proc/sys/fs/inotify/max_user_watches"
 [ "$(status inotify)" = CRITICAL ] && r=ok || r=bad; check "absurdly low inotify limits are CRITICAL" "$r" "$(status inotify)"
@@ -122,12 +122,11 @@ hits="$(grep -nE '^[^#]*\b(docker (system|image) prune|sudo)\b' engine/lib/hostc
 
 # --- pre-provisioning check: reads the host sampler's file, warns, never blocks ---
 export PROJECT_ROOT="${T}/pr"; mkdir -p "${PROJECT_ROOT}"
-# logger.sh needs Bash 4 (printf %T): the preflight only calls log_info / log_warn, so plain stand-ins keep this test runnable on Bash 3.2
-pf() { ( log_info() { echo "INFO $*"; }; log_warn() { echo "WARN $*"; }; source engine/lib/hostcheck.sh; set -Eeuo pipefail; hostcheck_preflight "$1"; echo "rc=$?" ) 2>&1; }
+pf() { ( source engine/lib/logger.sh; source engine/lib/hostcheck.sh; set -Eeuo pipefail; hostcheck_preflight "$1"; echo "rc=$?" ) 2>&1; }
 out="$(pf kind)"; grep -q 'not available' <<< "${out}" && grep -q 'rc=0' <<< "${out}" && r=ok || r=bad; check "no sampler file: an information line, rc 0" "$r" "${out}"
 x="disk|CRITICAL|Host disk usage|99% used, 3.4 GiB available of 100 GiB on /var/lib/docker|less than 85% used|Below 10% free the kubelet reports DiskPressure.|Free disk space before provisioning.|"
 printf '#ts=%s\n%s\n' "$(date +%s)" "${x}" > "${PROJECT_ROOT}/.host-checks"
-out="$(pf k3d)"; grep -q 'WARN.*\[CRITICAL\] Host disk usage' <<< "${out}" && grep -q 'DiskPressure' <<< "${out}" && grep -q 'Free disk space before provisioning' <<< "${out}" && grep -q 'rc=0' <<< "${out}" && r=ok || r=bad
+out="$(pf k3d)"; grep -q 'ERROR.*Critical: Host disk usage' <<< "${out}" && grep -q 'DiskPressure' <<< "${out}" && grep -q 'Free disk space before provisioning' <<< "${out}" && grep -q 'rc=0' <<< "${out}" && r=ok || r=bad
 check "k3d start: the disk warning is logged with impact and correction, and does not block (rc 0)" "$r" "${out}"
 out="$(pf external)"; ! grep -q 'DiskPressure' <<< "${out}" && grep -q 'rc=0' <<< "${out}" && r=ok || r=bad; check "external start: no host warning" "$r" "${out}"
 printf '#ts=%s\n%s\n' "$(( $(date +%s) - 3600 ))" "${x}" > "${PROJECT_ROOT}/.host-checks"
@@ -143,5 +142,31 @@ out="$(bash -c 'source "$1/repo/engine/host-metrics.sh"; refresh_checks; write 5
 grep -q '"disk_percent": 40' <<< "${out}" && grep -q '"warnings": 1' <<< "${out}" && grep -q '"warning_titles": "Linux inotify limits"' <<< "${out}" && grep -q '^#ts=' <<< "${out}" && r=ok || r=bad
 check "the sampler writes disk_percent, the warning count/titles and the .host-checks file" "$r" "${out}"
 [ -z "$(grep -n 'sysctl -w' "${SYSCTL_LOG}")" ] && r=ok || r=bad; check "the sampler never modifies a setting" "$r"
+
+# --- severity counts and the closing summary ---
+sm() { printf '%s\n' "$@" | ( source engine/lib/hostcheck.sh; hostcheck_summary ); }
+[ "$(sm 'a|OK|x|1' 'b|UNAVAILABLE|y|2')" = "all OK (1 not measurable here)" ] && r=ok || r=bad; check "summary: unavailable is information, never a problem" "$r" "$(sm 'a|OK|x|1' 'b|UNAVAILABLE|y|2')"
+[ "$(sm 'a|CRITICAL|x|1' 'b|WARNING|y|2' 'c|WARNING|z|3' 'd|UNAVAILABLE|u|4')" = "1 critical, 2 warnings (1 not measurable here)" ] && r=ok || r=bad; check "summary: a CRITICAL is counted as critical, never as a warning" "$r" "$(sm 'a|CRITICAL|x|1' 'b|WARNING|y|2' 'c|WARNING|z|3' 'd|UNAVAILABLE|u|4')"
+[ "$(sm 'a|WARNING|x|1')" = "1 warning" ] && r=ok || r=bad; check "summary: singular form" "$r"
+
+# --- lightweight: one docker call and one df per collection, whatever the number of checks ---
+cat > "${T}/bin/docker" <<'STUB'
+#!/bin/sh
+echo "docker $*" >> "${DOCKER_LOG}"; [ "$1" = info ] && { echo "${FAKE_DOCKER_ROOT:-/tmp}"; exit 0; }; exit 1
+STUB
+cat > "${T}/bin/df" <<'STUB'
+#!/bin/sh
+echo "df $*" >> "${DF_LOG}"; echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
+case "$*" in *-Pi*) echo "/dev/x 1000000 1000 999000 1% /m";; *) echo "/dev/x 100000000 40000000 60000000 40% /m";; esac
+STUB
+chmod +x "${T}/bin/docker" "${T}/bin/df"; export DOCKER_LOG="${T}/docker.log" DF_LOG="${T}/df.log"; : > "${DOCKER_LOG}"; : > "${DF_LOG}"
+export HOSTCHECK_OS=linux FAKE_DOCKER_ROOT="${T}"
+( source engine/lib/hostcheck.sh; hostcheck_collect >/dev/null; hostcheck_collect >/dev/null )
+[ "$(grep -c . "${DOCKER_LOG}")" = 1 ] && r=ok || r=bad; check "docker is asked for its data directory once per process, not per check or per collection" "$r" "$(cat "${DOCKER_LOG}")"
+[ "$(grep -c 'df -Pk' "${DF_LOG}")" = 2 ] && [ "$(grep -c 'df -Pi' "${DF_LOG}")" = 2 ] && r=ok || r=bad; check "df runs once for space and once for inodes per collection" "$r" "$(cat "${DF_LOG}")"
+( source engine/lib/hostcheck.sh; hostcheck_collect external >/dev/null ); [ "$(grep -c . "${DOCKER_LOG}")" = 1 ] && r=ok || r=bad; check "an external provider triggers no measurement at all" "$r"
+HOSTCHECK_OS=macos; export HOSTCHECK_OS; : > "${DOCKER_LOG}"
+( source engine/lib/hostcheck.sh; hostcheck_collect >/dev/null ); [ ! -s "${DOCKER_LOG}" ] && r=ok || r=bad; check "macOS needs no docker call for diagnostics" "$r" "$(cat "${DOCKER_LOG}")"
+HOSTCHECK_OS=linux; export HOSTCHECK_OS
 
 [ "${FAIL}" = 0 ] && echo "ALL HOSTCHECK TESTS PASSED" || { echo "SOME HOSTCHECK TESTS FAILED"; exit 1; }

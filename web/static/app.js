@@ -230,7 +230,7 @@ async function api(method, path, body) {
     headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined,
   });
   const data = await r.json();
-  if (!r.ok) throw new Error(data.error || r.status);
+  if (!r.ok) throw Object.assign(new Error(data.error || r.status), { code: data.code, issues: data.resource_issues });   // code: tells a resource confirmation from other errors
   return data;
 }
 
@@ -408,24 +408,41 @@ async function refreshUseCases() {
   }
 }
 
-async function start(name) {
-  try { await api("POST", `/api/usecases/${name}/start`); openLogs(name); }
-  catch (e) { showError(`Start ${name}: ${e.message}`); }
+async function start(name, confirmResources) {
+  try { await api("POST", `/api/usecases/${name}/start`, confirmResources ? { confirm_resources: true } : undefined); openLogs(name); }
+  catch (e) {
+    if (e.code === "resource_confirmation") { askResources(name, e.issues || []); return; }     // the same dialog as Stop, nothing was started
+    showError(`Start ${name}: ${e.message}`);
+  }
   refreshUseCases();
 }
 
 const dialog = document.getElementById("confirm");
 let stopTarget = null;
+// One dialog, three uses: Stop, Cancel (a start in progress) and the resource confirmation before a start.
+const confirmList = dialog.querySelector("ul"), stopItems = confirmList.innerHTML, confirmOk = document.getElementById("confirm-ok");
+let confirmMode = "stop";
 function askStop(name, cancelling) {
-  stopTarget = name;
+  stopTarget = name; confirmMode = "stop";
   document.getElementById("confirm-name").textContent = name;
   dialog.querySelector("h3").firstChild.textContent = cancelling ? "Cancel the start of " : "Stop ";
+  confirmList.innerHTML = stopItems; confirmOk.textContent = "Delete clusters";
+  dialog.showModal();
+}
+function askResources(name, issues) {
+  stopTarget = name; confirmMode = "resources";
+  document.getElementById("confirm-name").textContent = name;
+  dialog.querySelector("h3").firstChild.textContent = "Resource warnings before starting ";
+  confirmList.replaceChildren(...issues.map(i => { const li = document.createElement("li"); li.textContent = `${i.status === "CRITICAL" ? "Critical" : "Warning"}: ${i.title} (${i.current}). ${i.impact}`; return li; }),
+    Object.assign(document.createElement("li"), { textContent: "Nothing has been started. Details and corrections: ./playground doctor" }));
+  confirmOk.textContent = "Continue anyway";
   dialog.showModal();
 }
 document.getElementById("confirm-cancel").onclick = () => dialog.close();
 document.getElementById("confirm-ok").onclick = async () => {
   dialog.close();
   const name = stopTarget;
+  if (confirmMode === "resources") { start(name, true); return; }      // accepted: provisioning starts, nothing asks again
   try { await api("POST", `/api/usecases/${name}/stop`, { confirm: true }); openLogs(name); }
   catch (e) { showError(`Stop ${name}: ${e.message}`); }
   refreshUseCases();

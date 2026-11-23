@@ -112,6 +112,56 @@ esac
         os.system(f"pkill -f 'sleep 3071' 2>/dev/null; true")
 
 
+class HostIssuesTest(unittest.TestCase):
+    """The data behind the dashboard's resource confirmation: what the host sampler wrote, only when fresh, never for an external use case."""
+    def write(self, age=0, body=None):
+        f = Path(tempfile.mkdtemp()) / ".host-checks"
+        body = body if body is not None else ("disk|CRITICAL|Host disk usage|99% used;;3.4 GiB free|<85%|Below 10% free the kubelet reports DiskPressure.|fix|\n"
+                                              "inotify|WARNING|Linux inotify limits|a;;b|rec|Kind may fail.|fix|restore\n"
+                                              "memory|UNAVAILABLE|Host memory|unavailable||||\n")
+        f.write_text(f"#ts={time.time() - age}\n{body}")
+        return f
+
+    def test_issues_are_critical_and_warning_only(self):
+        issues = operations.host_issues(self.write(), "internal")
+        self.assertEqual([i["id"] for i in issues], ["disk", "inotify"])          # UNAVAILABLE is not an issue
+        self.assertEqual(issues[0]["status"], "CRITICAL")
+        self.assertEqual(issues[0]["current"], "99% used / 3.4 GiB free")
+        self.assertIn("DiskPressure", issues[0]["impact"])
+
+    def test_external_is_never_checked(self):
+        self.assertEqual(operations.host_issues(self.write(), "external"), [])
+
+    def test_stale_file_means_no_confirmation_not_a_block(self):
+        self.assertEqual(operations.host_issues(self.write(age=21), "internal"), [])      # older than 20 s
+        self.assertEqual(len(operations.host_issues(self.write(age=19), "internal")), 2)  # within the window
+
+    def test_missing_or_broken_file(self):
+        self.assertEqual(operations.host_issues(Path(tempfile.mkdtemp()) / "nope", "internal"), [])
+        f = Path(tempfile.mkdtemp()) / "x"; f.write_text("garbage\n"); self.assertEqual(operations.host_issues(f, "internal"), [])
+
+    def test_no_issue(self):
+        self.assertEqual(operations.host_issues(self.write(body=""), "internal"), [])
+
+
+class StartConfirmationSourceTest(unittest.TestCase):
+    """web/app.py (checked on its source, FastAPI is not needed): the start answers resource warnings with a distinguishable 409, and the
+    confirmed request goes straight to the unchanged _launch."""
+    SRC = (Path(__file__).resolve().parent.parent / "web" / "app.py").read_text()
+    JS = (Path(__file__).resolve().parent.parent / "web" / "static" / "app.js").read_text()
+
+    def test_server(self):
+        self.assertIn('body.get("confirm_resources") is not True', self.SRC)
+        self.assertIn('"code": "resource_confirmation"', self.SRC)
+        self.assertIn("status_code=409", self.SRC)
+        self.assertIn("operations.host_issues(HOST_CHECKS_FILE, ptype)", self.SRC)
+
+    def test_page(self):
+        self.assertIn('e.code === "resource_confirmation"', self.JS)       # only this 409 opens the dialog; the others are shown as errors
+        self.assertIn("confirm_resources: true", self.JS)
+        self.assertIn("Continue anyway", self.JS)
+
+
 class RegistryRulesTest(unittest.TestCase):
     """The 409 rules of web/app.py _launch, checked on its source (FastAPI is not needed): Cancel is only a stop while 'starting', a second
     Cancel finds the registered stop operation, and a start during a stop is refused."""

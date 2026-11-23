@@ -164,8 +164,19 @@ def _spawn_cancel_stop(name, extra):
     return _spawn(name, "stop", extra, "ab")
 
 
+HOST_CHECKS_FILE = ROOT / ".host-checks"      # written on the HOST by engine/host-metrics.sh (refreshed every ~6 s)
+
+
 @app.post("/api/usecases/{name}/start")
-def start(name: str):
+def start(name: str, body: dict = Body(default={})):
+    # Resource confirmation: the backend cannot prompt (its start process has no terminal), so warnings are answered with a 409 that carries
+    # code "resource_confirmation" (other 409s only have "error"); the page shows its dialog and posts again with confirm_resources: true.
+    if body.get("confirm_resources") is not True:
+        ptype = _use_case_meta().get(name, (None, None, "internal"))[2]
+        issues = operations.host_issues(HOST_CHECKS_FILE, ptype)
+        if issues:
+            return JSONResponse({"error": "host resource warnings need confirmation", "code": "resource_confirmation", "resource_issues": issues},
+                                status_code=409)
     return _launch(name, "start", [])
 
 

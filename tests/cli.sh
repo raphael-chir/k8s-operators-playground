@@ -136,4 +136,42 @@ run aib bogus; [ "${RC}" = 2 ] && r=ok || r=bad; check "ai-builder: unknown sub-
 run aib host status; [ "${RC}" = 1 ] && grep -q "not running" <<< "${OUT}" && ! grep -q "compose" "${LOG}" && r=ok || r=bad; check "ai-builder host status: the host-mode fallback is explicit and does not touch Docker" "$r" "${OUT}"
 grep -q "ai-builder host start|stop|status" <<< "$("${CLI}" --help)" && r=ok || r=bad; check "--help documents container commands and the host fallback" "$r"
 unset FAKE_CURL_STDIN REAL_CURL
+
+# --- host resource confirmation before `usecase start` (simulated host: /proc fixture, nothing is measured for real) -----------------------------
+mkdir -p "${T}/proc/sys/fs/inotify"
+printf 'processor: 0\nprocessor: 1\n' > "${T}/proc/cpuinfo"; printf 'MemTotal: 16000000 kB\nMemAvailable: 12000000 kB\n' > "${T}/proc/meminfo"
+echo 8192 > "${T}/proc/sys/fs/inotify/max_user_instances"; echo 1048576 > "${T}/proc/sys/fs/inotify/max_user_watches"
+gate() { OUT="$( ( ulimit -Sn 4096 2>/dev/null; HOSTCHECK_OS=linux HOSTCHECK_PROC="${T}/proc" "$@" ) 2>&1 </dev/null)"; RC=$?; }
+: > "${LOG}"; gate cli usecase start cnpg-standard
+[ "${RC}" = 0 ] && ! grep -q "Host resources" <<< "${OUT}" && grep -q "docker exec .*usecase start cnpg-standard" "${LOG}" && r=ok || r=bad; check "start gate: no resource issue -> starts immediately, no question" "$r" "rc=${RC} ${OUT}"
+echo 20 > "${T}/proc/sys/fs/inotify/max_user_watches"
+: > "${LOG}"; gate cli usecase start cnpg-standard
+[ "${RC}" = 1 ] && grep -q "Host resources: 1 critical" <<< "${OUT}" && grep -q "re-run with --yes" <<< "${OUT}" && ! grep -q "docker exec" "${LOG}" && r=ok || r=bad
+check "start gate: CRITICAL without a terminal -> refused (never waits for input), nothing started" "$r" "rc=${RC} ${OUT}"
+grep -qE '^\[[0-9:]{8}\] \[ERROR\] +inotify|^\[[0-9:]{8}\] \[ERROR\] +Linux inotify' <<< "$(printf '%s' "${OUT}" | sed 's/\x1b\[[0-9;]*m//g')" && r=ok || r=bad; check "start gate: a CRITICAL finding is logged at ERROR level, not as a warning" "$r" "${OUT}"
+: > "${LOG}"; gate cli usecase start cnpg-standard --yes
+[ "${RC}" = 0 ] && grep -q "Continuing (--yes)" <<< "${OUT}" && grep -q "docker exec .*usecase start cnpg-standard" "${LOG}" && ! grep -q -- "--yes" "${LOG}" && r=ok || r=bad
+check "start gate: --yes accepts once and is not passed to the container (which never asks again)" "$r" "rc=${RC} ${OUT} | $(calls | tail -1)"
+echo 300000 > "${T}/proc/sys/fs/inotify/max_user_watches"; echo 100 > "${T}/proc/sys/fs/inotify/max_user_instances"
+: > "${LOG}"; gate cli usecase start cnpg-standard
+[ "${RC}" = 1 ] && grep -q "Host resources: 1 warning" <<< "${OUT}" && ! grep -q "docker exec" "${LOG}" && r=ok || r=bad; check "start gate: a WARNING also needs confirmation" "$r" "rc=${RC} ${OUT}"
+: > "${LOG}"; gate cli usecase start openshift-crc
+! grep -q "Host resources" <<< "${OUT}" && r=ok || r=bad; check "start gate: an external use case is not checked against host resources" "$r" "${OUT}"
+PLAYGROUND_CONTEXT=container run "${CLI}" usecase start cnpg-standard --yes; [ "${RC}" = 2 ] && grep -q "only applies to 'usecase stop'" <<< "${OUT}" && r=ok || r=bad; check "inside the container nothing changes: --yes is still not a start option" "$r" "rc=${RC} ${OUT}"
+grep -q "usecase start NAME \[--yes\]" <<< "$("${CLI}" --help)" && r=ok || r=bad; check "--help documents --yes" "$r"
+: > "${LOG}"; OUT="$(ulimit -Sn 4096 2>/dev/null; HOSTCHECK_OS=linux HOSTCHECK_PROC="${T}/proc" PLAYGROUND_CONTEXT=host "${CLI}" doctor --summary 2>&1)"; RC=$?
+[ "${RC}" = 0 ] && grep -qE "^\[[0-9:]{8}\] \[INFO\] +Resource health: 1 warning" <<< "${OUT}" && r=ok || r=bad; check "doctor --summary: one line, severity counted correctly, exit 0" "$r" "rc=${RC} ${OUT}"
+echo 20 > "${T}/proc/sys/fs/inotify/max_user_watches"; echo 8192 > "${T}/proc/sys/fs/inotify/max_user_instances"
+OUT="$(ulimit -Sn 4096 2>/dev/null; HOSTCHECK_OS=linux HOSTCHECK_PROC="${T}/proc" PLAYGROUND_CONTEXT=host "${CLI}" doctor 2>&1)"; RC=$?
+[ "${RC}" = 0 ] && grep -q "Resource health: 1 critical" <<< "${OUT}" && ! grep -q "Environment ready, with" <<< "${OUT}" && r=ok || r=bad; check "doctor: a CRITICAL resource is counted as critical (not a warning) and keeps exit code 0" "$r" "rc=${RC} $(tail -4 <<< "${OUT}")"
+OUT="$(ulimit -Sn 4096 2>/dev/null; HOSTCHECK_OS=linux HOSTCHECK_PROC="${T}/proc" PLAYGROUND_CONTEXT=host "${CLI}" doctor --compact 2>&1)"
+[ "$(grep -c '\[SUCCESS\]' <<< "${OUT}")" -lt 8 ] && grep -qE "\[INFO\] +Prerequisites: [0-9]* checks OK" <<< "${OUT}" && r=ok || r=bad; check "doctor --compact: prerequisites are counted, not listed" "$r" "${OUT}"
+# --- operational messages use the engine's logger, checklists keep their tags ---
+LOGRE='^\[[0-9][0-9]:[0-9][0-9]:[0-9][0-9]\] \[(SUCCESS|INFO|WARN|ERROR)\]'
+run cli stop; grep -qE '^\[[0-9:]{8}\] \[SUCCESS\] +Playground stopped' <<< "${OUT}" && grep -qE '\[INFO\] +Kind and k3d clusters are independent' <<< "${OUT}" && r=ok || r=bad; check "stop: operational messages use the logger format" "$r" "${OUT}"
+PLAYGROUND_CONTEXT=container run "${CLI}" start; [ "${RC}" = 2 ] && grep -qE '^\[[0-9:]{8}\] \[ERROR\] +.start. runs on the host' <<< "${OUT}" && r=ok || r=bad; check "errors use the logger format ([ERROR], stderr)" "$r" "${OUT}"
+OUT="$(PLAYGROUND_CONTEXT=container "${CLI}" start 2>&1 >/dev/null </dev/null)"; grep -q '\[ERROR\]' <<< "${OUT}" && r=ok || r=bad; check "errors go to stderr" "$r" "${OUT}"
+OUT="$(ulimit -Sn 4096 2>/dev/null; HOSTCHECK_OS=linux HOSTCHECK_PROC="${T}/proc" PLAYGROUND_CONTEXT=host "${CLI}" doctor 2>&1)"
+grep -qE '^\[[0-9:]{8}\] \[SUCCESS\] +Docker CLI' <<< "${OUT}" && grep -qE '\[SECTION\] +Host resources' <<< "${OUT}" && ! grep -qE '\[OK\]|\[FAIL\]|\[CRIT\]' <<< "${OUT}" && r=ok || r=bad; check "doctor uses the logger style only (sections, levels, no checklist tags)" "$r" "$(head -5 <<< "${OUT}")"
+grep -q "doctor$" 00-provision.sh && r=bad || r=ok; check "00-provision.sh no longer runs doctor twice (install runs it once)" "$r"
 echo; [ "${FAIL}" = 0 ] && echo "ALL CLI TESTS PASSED" || echo "SOME CLI TESTS FAILED"; exit "${FAIL}"

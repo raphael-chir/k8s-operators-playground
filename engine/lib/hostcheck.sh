@@ -12,7 +12,7 @@
 HC_PROC="${HOSTCHECK_PROC:-/proc}"
 HC_INOTIFY_INSTANCES=8192
 HC_INOTIFY_WATCHES=524288
-HC_FRESH_SECONDS=120          # a sampler file older than this is not trusted by the pre-provisioning check
+HC_FRESH_SECONDS=20           # a sampler file older than this is not trusted (the sampler refreshes it every sample, ~6 s)
 
 hostcheck_env() {             # linux | wsl2 | macos | other
   case "${HOSTCHECK_OS:-$(uname -s)}" in
@@ -41,7 +41,9 @@ hostcheck_disk() {
   case "${env}" in
     macos) root="${HOME:-/}" ;;
     linux|wsl2)
-      root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+      # Docker's data directory does not change while the sampler runs: asked once per process (hostcheck_collect primes HC_DOCKER_ROOT in its own shell).
+      root="${HC_DOCKER_ROOT:-}"
+      [ -n "${root}" ] || root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
       [ -n "${root}" ] || root="/var/lib/docker"
       [ -d "${root}" ] || return 0 ;;
     *) return 0 ;;
@@ -87,7 +89,7 @@ _hc_memory() {
 
 _hc_disk() {
   local p t u a pct env; env="$(hostcheck_env)"
-  read -r p t u a pct <<< "$(hostcheck_disk)"
+  read -r p t u a pct <<< "${HC_DISK:-$(hostcheck_disk)}"      # HC_DISK: measured once by hostcheck_collect
   if [ -z "${pct:-}" ] || ! [ "${pct}" -ge 0 ] 2>/dev/null; then
     case "${env}" in
       linux|wsl2) _hc_rec disk UNAVAILABLE "Docker data disk" "unavailable (Docker's data directory is not visible from here, e.g. Docker Desktop's VM)" "" "" "" "" ;;
@@ -106,7 +108,7 @@ _hc_disk() {
 
 _hc_inodes() {
   local p pct total free; case "$(hostcheck_env)" in linux|wsl2) ;; *) return 0 ;; esac   # APFS has no fixed inode table
-  p="$(hostcheck_disk | awk '{ print $1 }' || true)"
+  p="${HC_DISK%% *}"; [ -n "${HC_DISK:-}" ] || p="$(hostcheck_disk | awk '{ print $1 }' || true)"
   [ -n "${p}" ] || { _hc_rec inodes UNAVAILABLE "Host inodes" "unavailable" "" "" "" ""; return; }
   read -r total free pct <<< "$(df -Pi "${p}" 2>/dev/null | awk 'NR == 2 { gsub("%", "", $5); print $2, $4, $5 }' || true)"
   if ! [ "${total:-0}" -gt 0 ] 2>/dev/null || ! [ "${pct:-x}" -ge 0 ] 2>/dev/null; then
@@ -163,7 +165,25 @@ _hc_fds() {
 # hostcheck_collect [provider]: every record. An external provider's cluster is not on this host: no host check applies to it.
 hostcheck_collect() {
   [ "${1:-}" != external ] || return 0
+  # Measured once for the whole run (and Docker's data directory once per process): no repeated df / docker info. When called directly
+  # (not in a command substitution) HC_DISK stays available to the caller, which is how the sampler reads the disk figures.
+  case "$(hostcheck_env)" in linux|wsl2) [ -n "${HC_DOCKER_ROOT:-}" ] || HC_DOCKER_ROOT="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)" ;; esac
+  HC_DISK="$(hostcheck_disk)"
   _hc_cpu; _hc_memory; _hc_disk; _hc_inodes; _hc_inotify; _hc_fds
+}
+
+# hostcheck_counts: reads records on stdin, prints "<critical> <warning> <unavailable>".
+hostcheck_counts() {
+  awk -F'|' '$2 == "CRITICAL" { c++ } $2 == "WARNING" { w++ } $2 == "UNAVAILABLE" { u++ } END { printf "%d %d %d\n", c, w, u }'
+}
+# hostcheck_summary: records on stdin -> "1 critical, 1 warning (2 not measurable here)" or "all OK" (an unavailable metric is information, not a problem).
+hostcheck_summary() {
+  local c w u out=""; read -r c w u <<< "$(hostcheck_counts)"
+  [ "${c}" -eq 0 ] || out="${c} critical"
+  [ "${w}" -eq 0 ] || out="${out:+${out}, }${w} warning$([ "${w}" -eq 1 ] || echo s)"
+  out="${out:-all OK}"
+  [ "${u}" -eq 0 ] || out="${out} (${u} not measurable here)"
+  printf '%s\n' "${out}"
 }
 
 # hostcheck_text <record>: the human block. Corrections are printed for the user to run: nothing is executed.
@@ -172,10 +192,21 @@ hostcheck_text() {
   IFS='|' read -r id st title cur recm impact fix restore <<< "${rec}"
   _blk() { [ -z "$2" ] || { printf '%s\n' "$1"; printf '%s\n' "$2" | sed 's/;;/\
 /g; s/^/  /'; }; }
-  printf '[%s] %s\n' "${st}" "${title}"
+  case "${st}" in CRITICAL) printf 'Critical: %s\n' "${title}" ;; *) printf 'Warning: %s\n' "${title}" ;; esac
   _blk "Current:" "${cur}"; _blk "Recommended:" "${recm}"; _blk "Impact:" "${impact}"
   _blk "Correction (manual; the Playground never runs it):" "${fix}"; _blk "Restore the previous value:" "${restore}"
   unset -f _blk
+}
+
+# hostcheck_log <record>: that block through the shared logger (engine/lib/logger.sh must be sourced): the title line at its level (CRITICAL = ERROR,
+# WARNING = WARN), the details as INFO lines.
+hostcheck_log() {
+  local st; st="$(printf '%s' "$1" | cut -d'|' -f2)"
+  hostcheck_text "$1" | {
+    IFS= read -r l
+    if [ "${st}" = CRITICAL ]; then log_error "${l}"; else log_warn "${l}"; fi
+    while IFS= read -r l; do log_info "${l}"; done
+  }
 }
 
 # hostcheck_preflight <provider>: before provisioning, warnings in the operation log (stdout of usecase start). Never fails, never blocks.
@@ -193,7 +224,7 @@ hostcheck_preflight() {
     case "${line}" in \#*|"") continue ;; esac
     case "$(printf '%s' "${line}" | cut -d'|' -f2)" in WARNING|CRITICAL) ;; *) continue ;; esac
     shown=1
-    hostcheck_text "${line}" | while IFS= read -r l; do log_warn "${l}"; done
+    hostcheck_log "${line}"
   done < "${file}"
   [ "${shown}" = 1 ] || log_info "Host resources: no warning (details: ./playground doctor)"
   return 0
