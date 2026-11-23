@@ -178,7 +178,7 @@ echo 20 > "${T}/proc/sys/fs/inotify/max_user_watches"; echo 100 > "${T}/proc/sys
 hc() { OUT="$( ( ulimit -Sn 4096 2>/dev/null; HOSTCHECK_OS=linux HOSTCHECK_PROC="${T}/proc" PLAYGROUND_CONTEXT=host "$@" ) 2>&1 </dev/null)"; RC=$?; }
 hc "${CLI}" doctor --recommendations
 [ "${RC}" = 0 ] && grep -qE '\[SECTION\] +Host resource recommendations' <<< "${OUT}" && grep -qE '\[WARN\] +Linux inotify limits \(CRITICAL\)' <<< "${OUT}" && r=ok || r=bad; check "recommendations: a section, with the resource, its severity as (CRITICAL) on a [WARN] line" "$r" "${OUT}"
-grep -q 'max_user_watches   = 20' <<< "${OUT}" && grep -q 'sudo sysctl -w fs.inotify.max_user_instances=8192' <<< "${OUT}" && grep -q 'sudo sysctl -w fs.inotify.max_user_watches=524288' <<< "${OUT}" && r=ok || r=bad; check "recommendations: current value and the exact sysctl commands" "$r" "${OUT}"
+grep -q 'max_user_watches   = 20' <<< "${OUT}" && grep -q 'sudo sysctl -w fs.inotify.max_user_instances=1024' <<< "${OUT}" && grep -q 'sudo sysctl -w fs.inotify.max_user_watches=131072' <<< "${OUT}" && r=ok || r=bad; check "recommendations: current value and the exact sysctl commands" "$r" "${OUT}"
 grep -q 'sysctl fs.inotify.max_user_instances fs.inotify.max_user_watches' <<< "${OUT}" && grep -q 'not inside the Playground container' <<< "${OUT}" && grep -q 'sudo sysctl -w fs.inotify.max_user_instances=100' <<< "${OUT}" && grep -q 'sudo sysctl -w fs.inotify.max_user_watches=20' <<< "${OUT}" && r=ok || r=bad; check "recommendations: where the original values are (read them first; listed under Restore)" "$r" "${OUT}"
 grep -q '\[ERROR\]' <<< "${OUT}" && r=bad || r=ok; check "recommendations: no [ERROR] for resource risks" "$r" "${OUT}"
 grep -q 'Nothing was changed' <<< "${OUT}" && r=ok || r=bad; check "recommendations: states that nothing is executed" "$r"
@@ -189,7 +189,7 @@ hc "${CLI}" doctor --recommendations
 printf '#!/bin/sh\necho "Filesystem 1024-blocks Used Available Capacity Mounted on"\ncase "$*" in *-Pi*) echo "/dev/x 1000000 1000 999000 1%% /m";; *) echo "/dev/x 100000000 99000000 3500000 99%% /m";; esac\n' > "${T}/bin/df"; chmod +x "${T}/bin/df"
 mkdir -p "${T}/dockerroot"
 OUT="$( ( ulimit -Sn 4096 2>/dev/null; export HOSTCHECK_OS=linux HOSTCHECK_PROC="${T}/proc" PLAYGROUND_CONTEXT=host HC_DOCKER_ROOT="${T}/dockerroot"; "${CLI}" doctor --recommendations ) 2>&1 </dev/null)"
-grep -qE '\[WARN\] +Host disk usage \(CRITICAL\)' <<< "${OUT}" && grep -q 'docker system df' <<< "${OUT}" && grep -q 'docker builder du' <<< "${OUT}" && grep -q 'free space manually' <<< "${OUT}" && ! grep -q '\[ERROR\]' <<< "${OUT}" && r=ok || r=bad; check "recommendations: disk pressure -> inspect Docker disk usage, free space manually (never run)" "$r" "${OUT}"
+grep -qE '\[WARN\] +Host disk usage \(CRITICAL\)' <<< "${OUT}" && grep -q 'docker system df' <<< "${OUT}" && grep -q 'docker builder du' <<< "${OUT}" && grep -q 'Cleanup is manual' <<< "${OUT}" && ! grep -q '\[ERROR\]' <<< "${OUT}" && r=ok || r=bad; check "recommendations: disk pressure -> inspect Docker disk usage, free space manually (never run)" "$r" "${OUT}"
 rm -f "${T}/bin/df"
 # wrapper: no repetition
 : > "${LOG}"; OUT="$(PLAYGROUND_BIND_ADDRESS=0.0.0.0 PLAYGROUND_CONTEXT=host PLAYGROUND_NO_HINT=1 "${CLI}" install 2>&1 </dev/null)"

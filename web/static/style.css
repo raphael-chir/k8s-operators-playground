@@ -224,16 +224,20 @@ main:not(.collapsed) #sidebar-reveal { display: none; }
 @media (max-width: 700px) { #sidebar-reveal { margin: 4px 8px; } }
 
 /* Host resource findings (resource-cards.js): preflight confirmation and the read-only view behind the warning marker. Theme variables only. */
-#confirm.wide { width: min(680px, 94vw); max-width: none; }
-.rc-cards { max-height: 60vh; overflow: auto; display: grid; gap: 10px; margin: 0 0 12px; padding-right: 2px; }
-.rc-card { border: 1px solid var(--border); border-left-width: 4px; border-radius: 8px; background: var(--surface); padding: 10px 12px; font-size: 13px; }
+#confirm.wide { width: min(640px, 94vw); max-width: none; max-height: 92vh; overflow: auto; }
+.rc-cards { max-height: 60vh; overflow: auto; display: grid; gap: 8px; margin: 0 0 12px; padding-right: 2px; }
+@media (max-height: 640px) { .rc-cards { max-height: 42vh; } }
+.rc-card { border: 1px solid var(--border); border-left-width: 4px; border-radius: 8px; background: var(--surface); padding: 8px 12px; font-size: 13px; }
 .rc-card.rc-warning { border-left-color: var(--warn); } .rc-card.rc-critical { border-left-color: var(--bad); }
-.rc-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.rc-head { display: flex; align-items: center; gap: 8px; }
 .rc-badge { font-size: 10px; font-weight: 700; letter-spacing: .06em; padding: 1px 6px; border-radius: 4px; border: 1px solid currentColor; }
 .rc-warning .rc-badge { color: var(--warn); } .rc-critical .rc-badge { color: var(--bad); }
-.rc-row { margin-top: 8px; }
+.rc-sum { display: flex; flex-wrap: wrap; gap: 2px 14px; margin-top: 4px; font-size: 12px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+.rc-text { margin: 4px 0; line-height: 1.4; }
+.rc-toggle { padding: 1px 10px; font-size: 12px; }
+.rc-fix { margin-top: 6px; padding-top: 4px; border-top: 1px solid var(--border); }
+.rc-row { margin-top: 6px; }
 .rc-lbl { font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin-bottom: 2px; }
-.rc-val, .rc-cmd pre { margin: 0; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.rc-text { margin: 0 0 4px; line-height: 1.4; }
+.rc-cmd pre { margin: 0; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .rc-cmd { position: relative; margin: 4px 0; padding: 8px 56px 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
 .rc-copy { position: absolute; top: 6px; right: 6px; padding: 1px 8px; font-size: 11px; }

@@ -43,7 +43,7 @@ def host_issues(path, provider_type, now=None, max_age=20):
     """The WARNING / CRITICAL host findings the host-side sampler (engine/host-metrics.sh) last wrote to `path`, for the confirmation shown before a
     start. This code runs in the container and must not present its own view as the host's, so it only reads that file. Returns [] when there is
     nothing to confirm: no issue, an external use case (its cluster is not on this host), or no fresh measurement (file missing or older than
-    `max_age` seconds: unavailable diagnostics never block a start). Each issue: {id, status, title, current, current_lines, recommended, impact, fix, restore}; fix and restore are lists of {text, command}."""
+    `max_age` seconds: unavailable diagnostics never block a start). Each issue: {id, status, title, current, current_lines, recommended, recommended_lines, impact, fix, restore}; fix and restore are lists of {text, command}."""
     if provider_type == "external":
         return []
     try:
@@ -58,7 +58,7 @@ def host_issues(path, provider_type, now=None, max_age=20):
         f = (line.split("|") + [""] * 8)[:8]
         if f[1] in ("WARNING", "CRITICAL") and f[2]:
             issues.append({"id": f[0], "status": f[1], "title": f[2], "current": f[3].replace(";;", " / "), "current_lines": _lines(f[3]),
-                           "recommended": f[4].replace(";;", " / "), "impact": f[5], "fix": _steps(f[6]), "restore": _steps(f[7])})
+                           "recommended": f[4].replace(";;", " / "), "recommended_lines": _lines(f[4]), "impact": f[5], "fix": _steps(f[6]), "restore": _steps(f[7])})
     return issues
 
 

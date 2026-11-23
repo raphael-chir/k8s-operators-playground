@@ -123,15 +123,16 @@ class HostIssuesTest(unittest.TestCase):
         return f
 
     def test_commands_and_restore_are_structured_for_the_page(self):
-        body = ("inotify|WARNING|Linux inotify limits|max_user_instances = 128;;max_user_watches   = 65536|max_user_instances = 8192;;max_user_watches   = 524288|Kind may fail.|"
-                "Run these on the Linux host itself.;;$ sudo sysctl -w fs.inotify.max_user_instances=8192;;$ sudo sysctl -w fs.inotify.max_user_watches=524288|"
+        body = ("inotify|WARNING|Linux inotify limits|max_user_instances = 128;;max_user_watches   = 65536|max_user_instances = 1024;;max_user_watches   = 131072|Kind may fail.|"
+                "Run these on the Linux host itself.;;$ sudo sysctl -w fs.inotify.max_user_instances=1024;;$ sudo sysctl -w fs.inotify.max_user_watches=131072|"
                 "$ sudo sysctl -w fs.inotify.max_user_instances=128;;$ sudo sysctl -w fs.inotify.max_user_watches=65536\n")
         (issue,) = operations.host_issues(self.write(body=body), "internal")
         self.assertEqual(issue["current_lines"], ["max_user_instances = 128", "max_user_watches   = 65536"])
-        self.assertEqual(issue["recommended"], "max_user_instances = 8192 / max_user_watches   = 524288")
+        self.assertEqual(issue["recommended"], "max_user_instances = 1024 / max_user_watches   = 131072")
+        self.assertEqual(issue["recommended_lines"], ["max_user_instances = 1024", "max_user_watches   = 131072"])
         self.assertEqual(issue["fix"][0], {"text": "Run these on the Linux host itself.", "command": False})
         self.assertEqual([s["text"] for s in issue["fix"] if s["command"]],
-                         ["sudo sysctl -w fs.inotify.max_user_instances=8192", "sudo sysctl -w fs.inotify.max_user_watches=524288"])
+                         ["sudo sysctl -w fs.inotify.max_user_instances=1024", "sudo sysctl -w fs.inotify.max_user_watches=131072"])
         self.assertEqual([s["text"] for s in issue["restore"]], ["sudo sysctl -w fs.inotify.max_user_instances=128", "sudo sysctl -w fs.inotify.max_user_watches=65536"])
         self.assertTrue(all(s["command"] for s in issue["restore"]))
 

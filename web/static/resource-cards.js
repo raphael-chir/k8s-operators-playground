@@ -59,18 +59,38 @@ const ResourceCards = (() => {
     return r;
   }
 
+  // Compact by default: severity, resource, current / recommended, one impact sentence and a toggle. The fix (action, commands, restore) is hidden
+  // until "Show fix".
+  let seq = 0;
   function card(doc, issue, copy) {
     const critical = issue.status === "CRITICAL";
     const c = el(doc, "section", "rc-card " + (critical ? "rc-critical" : "rc-warning"));
     const head = el(doc, "div", "rc-head");
     head.append(el(doc, "span", "rc-badge", critical ? "CRITICAL" : "WARNING"), el(doc, "strong", "rc-title", issue.title));
     c.append(head);
-    const lines = issue.current_lines && issue.current_lines.length ? issue.current_lines : [issue.current];
-    c.append(row(doc, "Current", el(doc, "pre", "rc-val", lines.join("\n"))));
-    if (issue.recommended) c.append(row(doc, "Recommended", el(doc, "pre", "rc-val", issue.recommended.split(" / ").join("\n"))));
-    if (issue.impact) c.append(row(doc, "Impact", el(doc, "p", "rc-text", issue.impact)));
-    if (issue.fix && issue.fix.length) c.append(row(doc, "Recommended action", ...steps(doc, issue.fix, copy)));
-    if (issue.restore && issue.restore.length) c.append(row(doc, "To restore the previous values", ...steps(doc, issue.restore, copy)));
+    const cur = issue.current_lines && issue.current_lines.length ? issue.current_lines : [issue.current];
+    const rec = issue.recommended_lines && issue.recommended_lines.length ? issue.recommended_lines : (issue.recommended ? [issue.recommended] : []);
+    const sum = el(doc, "div", "rc-sum");
+    sum.append(el(doc, "span", "rc-cur", "Current: " + cur.join(" · ")));
+    if (rec.length) sum.append(el(doc, "span", "rc-rec", "Recommended: " + rec.join(" · ")));
+    c.append(sum);
+    if (issue.impact) c.append(el(doc, "p", "rc-text", issue.impact));
+    const hasFix = (issue.fix && issue.fix.length) || (issue.restore && issue.restore.length);
+    if (hasFix) {
+      const fix = el(doc, "div", "rc-fix"), id = "rc-fix-" + (++seq);
+      fix.id = id; fix.hidden = true;
+      if (issue.fix && issue.fix.length) fix.append(row(doc, "Recommended action", ...steps(doc, issue.fix, copy)));
+      if (issue.restore && issue.restore.length) fix.append(row(doc, "To restore the previous values", ...steps(doc, issue.restore, copy)));
+      const toggle = el(doc, "button", "rc-toggle", "Show fix");
+      toggle.type = "button"; toggle.setAttribute("aria-expanded", "false"); toggle.setAttribute("aria-controls", id);
+      toggle.onclick = e => {
+        if (e && e.stopPropagation) e.stopPropagation();
+        fix.hidden = !fix.hidden;
+        toggle.textContent = fix.hidden ? "Show fix" : "Hide fix";
+        toggle.setAttribute("aria-expanded", fix.hidden ? "false" : "true");
+      };
+      c.append(toggle, fix);
+    }
     return c;
   }
 

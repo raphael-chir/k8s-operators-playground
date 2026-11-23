@@ -52,10 +52,10 @@ echo 128 > "${T}/proc/sys/fs/inotify/max_user_instances"; echo 65536 > "${T}/pro
 x="$(rec inotify)"
 [ "$(cut -d'|' -f2 <<< "${x}")" = WARNING ] && r=ok || r=bad; check "low inotify limits are a WARNING" "$r" "${x}"
 fix="$(cut -d'|' -f7 <<< "${x}")"; restore="$(cut -d'|' -f8 <<< "${x}")"
-[ "${fix}" = "Run these on the Linux host itself, not inside the Playground container. The values to restore are listed below; to read them again before changing anything:;;\$ sysctl fs.inotify.max_user_instances fs.inotify.max_user_watches;;\$ sudo sysctl -w fs.inotify.max_user_instances=8192;;\$ sudo sysctl -w fs.inotify.max_user_watches=524288" ] && r=ok || r=bad; check "inotify correction: runs on the Linux host (not in the container), reads the current values, then the recommended values (8192 / 524288); commands are marked with '\$ '" "$r" "${fix}"
+[ "${fix}" = "Run these on the Linux host itself, not inside the Playground container. Nothing is executed for you. The values to restore are listed below; to read them again before changing anything:;;\$ sysctl fs.inotify.max_user_instances fs.inotify.max_user_watches;;\$ sudo sysctl -w fs.inotify.max_user_instances=1024;;\$ sudo sysctl -w fs.inotify.max_user_watches=131072" ] && r=ok || r=bad; check "inotify correction: runs on the Linux host (not in the container), reads the current values, then the recommended values (1024 / 131072); commands are marked with '\$ '" "$r" "${fix}"
 [ "${restore}" = "\$ sudo sysctl -w fs.inotify.max_user_instances=128;;\$ sudo sysctl -w fs.inotify.max_user_watches=65536" ] && r=ok || r=bad; check "inotify restore = the previous values" "$r" "${restore}"
 txt="$(run hostcheck_text "${x}")"
-grep -q '^Linux inotify limits$' <<< "${txt}" && grep -q '^Impact:' <<< "${txt}" && grep -q '^  sudo sysctl -w fs.inotify.max_user_instances=8192' <<< "${txt}" && grep -q '^Restore the previous value:' <<< "${txt}" && r=ok || r=bad
+grep -q '^Linux inotify limits$' <<< "${txt}" && grep -q '^Impact:' <<< "${txt}" && grep -q '^  sudo sysctl -w fs.inotify.max_user_instances=1024' <<< "${txt}" && grep -q '^Restore the previous value:' <<< "${txt}" && r=ok || r=bad
 check "the text block shows current / recommended / impact / correction / restore" "$r" "${txt}"
 echo 8192 > "${T}/proc/sys/fs/inotify/max_user_instances"; echo 20 > "${T}/proc/sys/fs/inotify/max_user_watches"
 [ "$(status inotify)" = CRITICAL ] && r=ok || r=bad; check "absurdly low inotify limits are CRITICAL" "$r" "$(status inotify)"
@@ -147,9 +147,11 @@ check "the sampler writes disk_percent, the warning count/titles and the .host-c
 export FAKE_DF_K="100000000 99000000 3500000 99%"; x="$(HOSTCHECK_OS=linux rec disk)"
 fix="$(cut -d'|' -f7 <<< "${x}")"; impact="$(cut -d'|' -f6 <<< "${x}")"
 grep -q ';;\$ docker system df;;\$ docker builder du;;' <<< "${fix}" && r=ok || r=bad; check "disk advice: docker system df and docker builder du, marked as commands" "$r" "${fix}"
-grep -q 'Free disk space before continuing' <<< "${fix}" && grep -q 'must be pulled or rebuilt later' <<< "${fix}" && r=ok || r=bad; check "disk advice: free space before continuing, and what pruning deletes" "$r" "${fix}"
+grep -q 'Free disk space before continuing' <<< "${fix}" && grep -q 'may remove resources you need later' <<< "${fix}" && r=ok || r=bad; check "disk advice: free space before continuing, and what pruning deletes" "$r" "${fix}"
 grep -q 'prune' <<< "$(sed 's/must be pulled.*//' <<< "${fix}" | grep '^\$\|;;\$')" && r=bad || r=ok; check "disk advice: no cleanup command is offered as a command to copy" "$r" "${fix}"
-for w in DiskPressure 'Pods cannot start' 'evicted' 'image pulls fail' 'provisioned or tested'; do grep -q "${w}" <<< "${impact}" && r=ok || r=bad; check "disk impact mentions: ${w}" "$r" "${impact}"; done
+for w in DiskPressure 'prevent Pods from starting'; do grep -q "${w}" <<< "${impact}" && r=ok || r=bad; check "disk impact (one sentence) mentions: ${w}" "$r" "${impact}"; done
+[ "$(grep -o '\.' <<< "${impact}" | wc -l | tr -d ' ')" = 1 ] && r=ok || r=bad; check "disk impact is a single concise sentence" "$r" "${impact}"
+for w in 'DiskPressure' 'evicted' 'image pulls fail' 'provisioning or testing'; do grep -q "${w}" <<< "${fix}" && r=ok || r=bad; check "disk details (under Show fix) mention: ${w}" "$r" "${fix}"; done
 export FAKE_DF_K="100000000 40000000 60000000 40%"
 HOSTCHECK_OS=macos; export HOSTCHECK_OS
 all="$(run hostcheck_collect)"
@@ -160,6 +162,22 @@ x="$(rec inotify)"; grep -q 'not inside the Playground container' <<< "${x}" && 
 echo 8192 > "${T}/proc/sys/fs/inotify/max_user_instances"
 txt="$(run hostcheck_text "disk|CRITICAL|Host disk usage|99%|<85%|impact|Intro:;;\$ docker system df;;Then.|")"
 grep -q '^  docker system df$' <<< "${txt}" && ! grep -q '^  \$ ' <<< "${txt}" && r=ok || r=bad; check "the text output prints commands without the '\$ ' marker" "$r" "${txt}"
+
+# --- disk levels: WARNING from 85%, CRITICAL from 95% (Playground preventive levels) ---
+for pair in "84:OK" "85:WARNING" "94:WARNING" "95:CRITICAL" "97:CRITICAL"; do
+  export FAKE_DF_K="100000000 ${pair%%:*}000000 1000000 ${pair%%:*}%"
+  [ "$(status disk)" = "${pair##*:}" ] && r=ok || r=bad; check "disk ${pair%%:*}% -> ${pair##*:}" "$r" "$(status disk)"
+done
+export FAKE_DF_K="100000000 40000000 60000000 40%"
+# --- inotify: alert floors and recommended values are separate; the correction always clears the warning ---
+setin() { echo "$1" > "${T}/proc/sys/fs/inotify/max_user_instances"; echo "$2" > "${T}/proc/sys/fs/inotify/max_user_watches"; }
+setin 1024 131072; [ "$(status inotify)" = OK ] && r=ok || r=bad; check "inotify at the recommended values (1024 / 131072) is OK" "$r" "$(status inotify)"
+setin 512 131072; [ "$(status inotify)" = OK ] && r=ok || r=bad; check "inotify at the alert floors (512 / 131072) is OK" "$r" "$(status inotify)"
+setin 511 200000; [ "$(status inotify)" = WARNING ] && r=ok || r=bad; check "inotify instances below the alert floor -> WARNING" "$r" "$(status inotify)"
+setin 2000 131071; [ "$(status inotify)" = WARNING ] && r=ok || r=bad; check "inotify watches below the alert floor -> WARNING" "$r" "$(status inotify)"
+setin 128 65536; x="$(rec inotify)"; grep -q 'max_user_instances = 1024;;max_user_watches   = 131072' <<< "${x}" && r=ok || r=bad; check "the recommended values shown are 1024 / 131072" "$r" "${x}"
+setin 1024 131072; [ "$(status inotify)" != WARNING ] && r=ok || r=bad; check "applying the recommended values clears the warning" "$r"
+setin 8192 1048576
 
 # --- severity counts and the closing summary ---
 sm() { printf '%s\n' "$@" | ( source engine/lib/hostcheck.sh; hostcheck_summary ); }

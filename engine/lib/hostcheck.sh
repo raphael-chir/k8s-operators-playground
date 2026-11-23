@@ -11,8 +11,17 @@
 # Test hooks: HOSTCHECK_OS (macos|linux|wsl2), HOSTCHECK_PROC (default /proc), and PATH stubs for df, sysctl, vm_stat, docker.
 
 HC_PROC="${HOSTCHECK_PROC:-/proc}"
-HC_INOTIFY_INSTANCES=8192
-HC_INOTIFY_WATCHES=524288
+# inotify: the RECOMMENDED values (what the correction sets) and the ALERT floors (below them a WARNING is raised) are separate on purpose; a floor
+# never exceeds its recommendation, so applying the correction always clears the warning. CRITICAL floors flag clearly broken values.
+HC_INOTIFY_INSTANCES=1024      # recommended fs.inotify.max_user_instances
+HC_INOTIFY_WATCHES=131072      # recommended fs.inotify.max_user_watches
+HC_INOTIFY_ALERT_INSTANCES=512
+HC_INOTIFY_ALERT_WATCHES=131072
+HC_INOTIFY_CRIT_INSTANCES=64
+HC_INOTIFY_CRIT_WATCHES=8192
+# Playground preventive disk-usage levels (not the kubelet's eviction thresholds): WARNING from 85% used, CRITICAL from 95%.
+HC_DISK_WARN_PCT=85
+HC_DISK_CRIT_PCT=95
 HC_FRESH_SECONDS=20           # a sampler file older than this is not trusted (the sampler refreshes it every sample, ~6 s)
 
 hostcheck_env() {             # linux | wsl2 | macos | other
@@ -60,7 +69,7 @@ _hc_cpu() {
   esac
   if ! [ "${n:-0}" -gt 0 ] 2>/dev/null; then _hc_rec cpu UNAVAILABLE "Host CPU cores" "unavailable" "" "" "" ""; return; fi
   if [ "${n}" -ge 2 ]; then _hc_rec cpu OK "Host CPU cores" "${n}" "" "" "" ""
-  else _hc_rec cpu WARNING "Host CPU cores" "${n}" "2 or more" "The Kubernetes control plane and the workloads compete for a single CPU: provisioning is slow and probes time out." \
+  else _hc_rec cpu WARNING "Host CPU cores" "${n}" "2 or more" "A single CPU makes provisioning slow and probes time out." \
     "Give the machine or VM more CPUs." ""; fi
 }
 
@@ -82,9 +91,9 @@ _hc_memory() {
   local fix="Close other applications, or add memory."
   [ "${env}" != wsl2 ] || fix="Raise the WSL2 memory limit: [wsl2] memory=... in %UserProfile%\\.wslconfig, then run: wsl --shutdown"
   if [ "${avail}" -lt 524288 ]; then
-    _hc_rec memory CRITICAL "Host memory" "${cur}" "2 GiB or more available" "Kind/k3d nodes and the Docker VM can be killed for lack of memory." "${fix}" ""
+    _hc_rec memory CRITICAL "Host memory" "${cur}" "2 GiB or more available" "Kubernetes nodes and the Docker VM may be killed for lack of memory." "${fix}" ""
   elif [ "${avail}" -lt 2097152 ]; then
-    _hc_rec memory WARNING "Host memory" "${cur}" "2 GiB or more available" "Low free memory: Kubernetes API timeouts and evicted Pods are likely when a use case starts." "${fix}" ""
+    _hc_rec memory WARNING "Host memory" "${cur}" "2 GiB or more available" "Low free memory may cause Kubernetes API timeouts and evicted Pods." "${fix}" ""
   else _hc_rec memory OK "Host memory" "${cur}" "" "" "" ""; fi
 }
 
@@ -99,11 +108,11 @@ _hc_disk() {
     return
   fi
   local cur="${pct}% used, $(_hc_kb "${a}") available of $(_hc_kb "${t}") on ${p}"
-  local impact="Free disk space may run out while Kubernetes is provisioned or tested (Kind/k3d nodes live on this disk). Below 10% free the kubelet reports DiskPressure: Pods cannot start or are evicted, and image pulls fail."
-  local fix="Free disk space before continuing. First see what Docker uses (read-only commands):;;\$ docker system df;;\$ docker builder du;;Then free space manually (the Playground never runs it for you). Pruning deletes unused images, stopped containers or build cache, which must be pulled or rebuilt later: review the output above first."
+  local impact="Low disk space may cause Kubernetes DiskPressure and prevent Pods from starting."
+  local fix="Free disk space before continuing. Kind/k3d nodes live on this disk: when it fills up during provisioning or testing, Kubernetes reports DiskPressure, Pods cannot start or are evicted, and image pulls fail. See what Docker uses (read-only):;;\$ docker system df;;\$ docker builder du;;Cleanup is manual (the Playground never runs it for you) and may remove resources you need later, such as images that must be pulled again: review the output above first."
   [ "${env}" != macos ] || fix="${fix};;Docker Desktop also has its own disk image limit (Settings > Resources > Disk image size)"
-  if [ "${pct}" -ge 90 ]; then _hc_rec disk CRITICAL "Host disk usage" "${cur}" "less than 85% used" "${impact}" "${fix}" ""
-  elif [ "${pct}" -ge 85 ]; then _hc_rec disk WARNING "Host disk usage" "${cur}" "less than 85% used" "${impact}" "${fix}" ""
+  if [ "${pct}" -ge "${HC_DISK_CRIT_PCT}" ]; then _hc_rec disk CRITICAL "Host disk usage" "${cur}" "less than 85% used" "${impact}" "${fix}" ""
+  elif [ "${pct}" -ge "${HC_DISK_WARN_PCT}" ]; then _hc_rec disk WARNING "Host disk usage" "${cur}" "less than 85% used" "${impact}" "${fix}" ""
   else _hc_rec disk OK "Host disk usage" "${cur}" "" "" "" ""; fi
 }
 
@@ -116,7 +125,7 @@ _hc_inodes() {
     _hc_rec inodes UNAVAILABLE "Host inodes" "unavailable (this filesystem reports no inode table)" "" "" "" ""; return
   fi
   local cur="${pct}% used, ${free} free of ${total} on ${p}"
-  local impact="Without free inodes nothing new can be created, even with free space: image pulls and containerd fail, and the kubelet reports DiskPressure."
+  local impact="Running out of inodes may cause DiskPressure and failing image pulls, even with free space."
   local fix="See what Docker uses (read-only):;;\$ docker system df;;Then remove unused images and containers manually, after reviewing them (the Playground never runs it for you)."
   if [ "${pct}" -ge 95 ]; then _hc_rec inodes CRITICAL "Host inodes" "${cur}" "less than 90% used" "${impact}" "${fix}" ""
   elif [ "${pct}" -ge 90 ]; then _hc_rec inodes WARNING "Host inodes" "${cur}" "less than 90% used" "${impact}" "${fix}" ""
@@ -143,16 +152,16 @@ _hc_inotify() {
   if [ "${watch}" -lt "${HC_INOTIFY_WATCHES}" ]; then
     fix="${fix:+${fix};;}\$ sudo sysctl -w fs.inotify.max_user_watches=${HC_INOTIFY_WATCHES}"; restore="${restore:+${restore};;}\$ sudo sysctl -w fs.inotify.max_user_watches=${watch}"
   fi
-  [ "${inst}" -ge 512 ] && [ "${watch}" -ge 262144 ] || status=WARNING
-  { [ "${inst}" -ge 64 ] && [ "${watch}" -ge 8192 ]; } || status=CRITICAL
+  [ "${inst}" -ge "${HC_INOTIFY_ALERT_INSTANCES}" ] && [ "${watch}" -ge "${HC_INOTIFY_ALERT_WATCHES}" ] || status=WARNING
+  { [ "${inst}" -ge "${HC_INOTIFY_CRIT_INSTANCES}" ] && [ "${watch}" -ge "${HC_INOTIFY_CRIT_WATCHES}" ]; } || status=CRITICAL
   if [ "${status}" = OK ]; then _hc_rec inotify OK "inotify limits" "${cur}" "" "" "" ""; return; fi
   # the original values: read them now (and they are listed under "Restore" below), because after the change sysctl shows the new ones
-  fix="Run these on the Linux host itself, not inside the Playground container. The values to restore are listed below; to read them again before changing anything:;;\$ sysctl fs.inotify.max_user_instances fs.inotify.max_user_watches;;${fix}"
+  fix="Run these on the Linux host itself, not inside the Playground container. Nothing is executed for you. The values to restore are listed below; to read them again before changing anything:;;\$ sysctl fs.inotify.max_user_instances fs.inotify.max_user_watches;;${fix}"
   if [ "${env}" = wsl2 ]; then
     fix="${fix};;(run inside the WSL2 distro: all WSL2 distros and Docker Desktop's WSL2 backend share one kernel; the change is lost after: wsl --shutdown)"
   fi
   _hc_rec inotify "${status}" "Linux inotify limits" "${cur}" "${rec}" \
-    "Kind/k3d nodes (kubelet, containerd, many Pods) can fail with 'too many open files' or 'no space left on device' under heavy workloads." "${fix}" "${restore}"
+    "Low inotify limits may affect Kubernetes workloads under heavy activity." "${fix}" "${restore}"
 }
 
 _hc_fds() {
@@ -161,7 +170,7 @@ _hc_fds() {
   if ! [ "${n:-x}" -ge 0 ] 2>/dev/null && [ "${n}" != unlimited ]; then _hc_rec fds UNAVAILABLE "Open-file limit (ulimit -n)" "unavailable" "" "" "" ""; return; fi
   if [ "${n}" = unlimited ] || [ "${n}" -ge 1024 ]; then _hc_rec fds OK "Open-file limit (ulimit -n)" "${n}" "" "" "" ""
   else _hc_rec fds WARNING "Open-file limit (ulimit -n)" "${n}" "1024 or more" \
-    "Limit of this shell and the tools it starts (kubectl, helm, kind); containers use Docker's own limit, set by its service." \
+    "A low limit may make kubectl, helm or kind fail with too many open files (containers use Docker's own limit)." \
     "In this shell only (the hard limit applies):;;\$ ulimit -n 65536" "\$ ulimit -n ${n}"; fi
 }
 

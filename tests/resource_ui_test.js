@@ -27,13 +27,13 @@ const byClass = (n, c) => all(n, e => (" " + e.className + " ").includes(" " + c
 const text = n => n.textContent;
 
 const INOTIFY = { id: "inotify", status: "WARNING", title: "Linux inotify limits", current: "max_user_instances = 128 / max_user_watches   = 65536",
-  current_lines: ["max_user_instances = 128", "max_user_watches   = 65536"], recommended: "max_user_instances = 8192 / max_user_watches   = 524288",
-  impact: "Kind/k3d nodes can fail with 'too many open files' under heavy workloads.",
+  current_lines: ["max_user_instances = 128", "max_user_watches   = 65536"], recommended: "max_user_instances = 1024 / max_user_watches   = 131072", recommended_lines: ["max_user_instances = 1024", "max_user_watches   = 131072"],
+  impact: "Low inotify limits may affect Kubernetes workloads under heavy activity.",
   fix: [{ text: "Run these on the Linux host itself, not inside the Playground container.", command: false },
-        { text: "sudo sysctl -w fs.inotify.max_user_instances=8192", command: true }, { text: "sudo sysctl -w fs.inotify.max_user_watches=524288", command: true }],
+        { text: "sudo sysctl -w fs.inotify.max_user_instances=1024", command: true }, { text: "sudo sysctl -w fs.inotify.max_user_watches=131072", command: true }],
   restore: [{ text: "sudo sysctl -w fs.inotify.max_user_instances=128", command: true }, { text: "sudo sysctl -w fs.inotify.max_user_watches=65536", command: true }] };
 const DISK = { id: "disk", status: "CRITICAL", title: "Host disk usage", current: "99% used, 3.3 GiB available of 100 GiB on /var/lib/docker", current_lines: ["99% used, 3.3 GiB available of 100 GiB on /var/lib/docker"],
-  recommended: "less than 85% used", impact: "Free disk space may run out: DiskPressure, Pods unable to start, evictions, image pull failures.",
+  recommended: "less than 85% used", recommended_lines: ["less than 85% used"], impact: "Low disk space may cause Kubernetes DiskPressure and prevent Pods from starting.",
   fix: [{ text: "Free disk space before continuing.", command: false }, { text: "docker system df", command: true }, { text: "docker builder du", command: true },
         { text: "Pruning deletes unused images; review first.", command: false }], restore: [] };
 
@@ -49,6 +49,7 @@ test("a card shows severity, resource, current value, impact, recommended action
   const t = text(cards[0]);
   assert.match(t, /99% used, 3\.3 GiB available/); assert.match(t, /DiskPressure/); assert.match(t, /Recommended action/); assert.match(t, /Free disk space before continuing/);
   assert.match(text(cards[1]), /max_user_instances = 128/); assert.match(text(cards[1]), /max_user_watches   = 65536/);
+  assert.match(text(cards[1]), /Recommended: max_user_instances = 1024 · max_user_watches   = 131072/);
 });
 test("commands are grouped in one copyable block each; explanations stay text", () => {
   const box = new El("div"); RC.render(doc, box, [DISK], () => Promise.resolve());
@@ -60,7 +61,7 @@ test("commands are grouped in one copyable block each; explanations stay text", 
 test("inotify: correction block, restore block with the detected values, and the where-to-run explanation", () => {
   const box = new El("div"); RC.render(doc, box, [INOTIFY], () => Promise.resolve());
   const blocks = byClass(box, "rc-cmd").map(b => text(all(b, e => e.tagName === "PRE")[0]));
-  assert.deepStrictEqual(blocks, ["sudo sysctl -w fs.inotify.max_user_instances=8192\nsudo sysctl -w fs.inotify.max_user_watches=524288",
+  assert.deepStrictEqual(blocks, ["sudo sysctl -w fs.inotify.max_user_instances=1024\nsudo sysctl -w fs.inotify.max_user_watches=131072",
                                   "sudo sysctl -w fs.inotify.max_user_instances=128\nsudo sysctl -w fs.inotify.max_user_watches=65536"]);
   assert.match(text(box), /not inside the Playground container/); assert.match(text(box), /To restore the previous values/);
 });
@@ -76,12 +77,12 @@ test("Copy sends exactly the block's commands and reports Copied, then returns t
   const box = new El("div"), sent = []; RC.render(doc, box, [INOTIFY], t => { sent.push(t); return Promise.resolve(); });
   const btn = all(byClass(box, "rc-cmd")[0], e => e.tagName === "BUTTON")[0];
   btn.onclick(); await new Promise(r => setImmediate(r));
-  assert.deepStrictEqual(sent, ["sudo sysctl -w fs.inotify.max_user_instances=8192\nsudo sysctl -w fs.inotify.max_user_watches=524288"]);
+  assert.deepStrictEqual(sent, ["sudo sysctl -w fs.inotify.max_user_instances=1024\nsudo sysctl -w fs.inotify.max_user_watches=131072"]);
   assert.strictEqual(btn.textContent, "Copied");
 });
 test("Copy failure is shown, not hidden", async () => {
   const box = new El("div"); RC.render(doc, box, [DISK], () => Promise.reject(new Error("no")));
-  const btn = all(box, e => e.tagName === "BUTTON")[0]; btn.onclick(); await new Promise(r => setImmediate(r));
+  const btn = byClass(box, "rc-copy")[0]; btn.onclick(); await new Promise(r => setImmediate(r));
   assert.strictEqual(btn.textContent, "Copy failed");
 });
 test("copyText: the clipboard API when available, else the textarea fallback (http over a LAN address)", async () => {
@@ -94,6 +95,45 @@ test("copyText: the clipboard API when available, else the textarea fallback (ht
 test("untrusted text is never interpreted as HTML", () => {
   const box = new El("div"); RC.render(doc, box, [{ ...DISK, title: "<img src=x onerror=alert(1)>" }], () => Promise.resolve());
   assert.ok(byClass(box, "rc-title")[0].textContent.includes("<img")); assert.doesNotMatch(fs.readFileSync(path.join(ROOT, "web/static/resource-cards.js"), "utf8"), /innerHTML|insertAdjacentHTML/);
+});
+
+// --- compact cards and Show fix / Hide fix ---
+test("by default a card is compact: severity, resource, current, recommended, one impact sentence and a Show fix button; the fix is hidden", () => {
+  const box = new El("div"); RC.render(doc, box, [DISK, INOTIFY], () => Promise.resolve());
+  const [d, i] = byClass(box, "rc-card");
+  assert.strictEqual(text(byClass(d, "rc-sum")[0]), "Current: 99% used, 3.3 GiB available of 100 GiB on /var/lib/docker" + "Recommended: less than 85% used");
+  assert.strictEqual(text(byClass(i, "rc-sum")[0]), "Current: max_user_instances = 128 · max_user_watches   = 65536" + "Recommended: max_user_instances = 1024 · max_user_watches   = 131072");
+  assert.strictEqual(text(d.children[2]), "Low disk space may cause Kubernetes DiskPressure and prevent Pods from starting.");        // the one impact sentence
+  const toggles = byClass(box, "rc-toggle"); assert.deepStrictEqual(toggles.map(text), ["Show fix", "Show fix"]);
+  assert.deepStrictEqual(byClass(box, "rc-fix").map(f => f.hidden), [true, true]);
+  assert.deepStrictEqual(toggles.map(t => t.attrs["aria-expanded"]), ["false", "false"]);
+});
+test("Show fix expands the corrections, Hide fix collapses them", () => {
+  const box = new El("div"); RC.render(doc, box, [INOTIFY], () => Promise.resolve());
+  const t = byClass(box, "rc-toggle")[0], f = byClass(box, "rc-fix")[0];
+  t.onclick(); assert.strictEqual(f.hidden, false); assert.strictEqual(t.textContent, "Hide fix"); assert.strictEqual(t.attrs["aria-expanded"], "true");
+  assert.match(text(f), /Recommended action/); assert.match(text(f), /To restore the previous values/);
+  t.onclick(); assert.strictEqual(f.hidden, true); assert.strictEqual(t.textContent, "Show fix"); assert.strictEqual(t.attrs["aria-expanded"], "false");
+});
+test("cards toggle independently", () => {
+  const box = new El("div"); RC.render(doc, box, [DISK, INOTIFY], () => Promise.resolve());
+  const [t1, t2] = byClass(box, "rc-toggle"), [f1, f2] = byClass(box, "rc-fix");
+  t1.onclick(); assert.deepStrictEqual([f1.hidden, f2.hidden], [false, true]); t2.onclick(); assert.deepStrictEqual([f1.hidden, f2.hidden], [false, false]);
+});
+test("a finding without any fix has no Show fix button", () => {
+  const box = new El("div"); RC.render(doc, box, [{ ...DISK, fix: [], restore: [] }], () => Promise.resolve());
+  assert.strictEqual(byClass(box, "rc-toggle").length, 0);
+});
+test("Copy lives inside the expandable fix and still copies the block", async () => {
+  const box = new El("div"), sent = []; RC.render(doc, box, [DISK], t => { sent.push(t); return Promise.resolve(); });
+  const fix = byClass(box, "rc-fix")[0]; assert.strictEqual(fix.hidden, true);
+  all(fix, e => e.tagName === "BUTTON")[0].onclick(); await new Promise(r => setImmediate(r));
+  assert.deepStrictEqual(sent, ["docker system df\ndocker builder du"]);
+});
+test("disk fix: read-only diagnostics, cleanup explained as manual (from the data, not from the script)", () => {
+  const box = new El("div"); RC.render(doc, box, [DISK], () => Promise.resolve());
+  assert.deepStrictEqual(byClass(box, "rc-cmd").map(b => text(all(b, e => e.tagName === "PRE")[0])), ["docker system df\ndocker builder du"]);
+  assert.doesNotMatch(fs.readFileSync(path.join(ROOT, "web/static/resource-cards.js"), "utf8"), /docker|sysctl|inotify|DiskPressure/);        // nothing platform-specific is hardcoded
 });
 
 // --- wiring: the warning marker, the dialogs and the unchanged Start / Stop / Cancel ---
@@ -121,6 +161,7 @@ test("styles follow the theme: only CSS variables (light and dark), a scrolling 
   const block = CSS.slice(CSS.indexOf("/* Host resource findings"));
   assert.doesNotMatch(block, /#[0-9a-fA-F]{3,6}\b|rgb\(/); assert.match(block, /var\(--warn\)/); assert.match(block, /var\(--bad\)/);
   assert.match(block, /\.rc-cards \{[^}]*overflow: auto/); assert.match(block, /max-height: 60vh/); assert.match(block, /#confirm\.wide/);
+  assert.match(block, /#confirm\.wide \{[^}]*max-height: 92vh; overflow: auto/); assert.match(block, /@media \(max-height: 640px\) \{ \.rc-cards \{ max-height: 42vh/);       // scrolls on small screens
   assert.match(CSS, /--bad: #c8472b/); assert.match(CSS, /--warn: #964c0a/); assert.match(CSS, /--bad: #f48771/); assert.match(CSS, /--warn: #e5a14f/);   // both themes define the colors used
 });
 
