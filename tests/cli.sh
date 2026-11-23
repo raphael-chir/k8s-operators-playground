@@ -148,7 +148,7 @@ echo 20 > "${T}/proc/sys/fs/inotify/max_user_watches"
 : > "${LOG}"; gate cli usecase start cnpg-standard
 [ "${RC}" = 1 ] && grep -q "Host resources: 1 critical" <<< "${OUT}" && grep -q "re-run with --yes" <<< "${OUT}" && ! grep -q "docker exec" "${LOG}" && r=ok || r=bad
 check "start gate: CRITICAL without a terminal -> refused (never waits for input), nothing started" "$r" "rc=${RC} ${OUT}"
-grep -qE '^\[[0-9:]{8}\] \[ERROR\] +inotify|^\[[0-9:]{8}\] \[ERROR\] +Linux inotify' <<< "$(printf '%s' "${OUT}" | sed 's/\x1b\[[0-9;]*m//g')" && r=ok || r=bad; check "start gate: a CRITICAL finding is logged at ERROR level, not as a warning" "$r" "${OUT}"
+grep -qE '^\[[0-9:]{8}\] \[WARN\] +Linux inotify limits.*\(CRITICAL\)|^\[[0-9:]{8}\] \[WARN\] +inotify.*\(CRITICAL\)' <<< "$(printf '%s' "${OUT}" | sed 's/\x1b\[[0-9;]*m//g')" && ! grep -qE '\[ERROR\].*(inotify|CRITICAL)' <<< "${OUT}" && r=ok || r=bad; check "start gate: a CRITICAL resource finding is a [WARN] saying (CRITICAL), never an [ERROR]" "$r" "${OUT}"
 : > "${LOG}"; gate cli usecase start cnpg-standard --yes
 [ "${RC}" = 0 ] && grep -q "Continuing (--yes)" <<< "${OUT}" && grep -q "docker exec .*usecase start cnpg-standard" "${LOG}" && ! grep -q -- "--yes" "${LOG}" && r=ok || r=bad
 check "start gate: --yes accepts once and is not passed to the container (which never asks again)" "$r" "rc=${RC} ${OUT} | $(calls | tail -1)"
@@ -173,5 +173,33 @@ PLAYGROUND_CONTEXT=container run "${CLI}" start; [ "${RC}" = 2 ] && grep -qE '^\
 OUT="$(PLAYGROUND_CONTEXT=container "${CLI}" start 2>&1 >/dev/null </dev/null)"; grep -q '\[ERROR\]' <<< "${OUT}" && r=ok || r=bad; check "errors go to stderr" "$r" "${OUT}"
 OUT="$(ulimit -Sn 4096 2>/dev/null; HOSTCHECK_OS=linux HOSTCHECK_PROC="${T}/proc" PLAYGROUND_CONTEXT=host "${CLI}" doctor 2>&1)"
 grep -qE '^\[[0-9:]{8}\] \[SUCCESS\] +Docker CLI' <<< "${OUT}" && grep -qE '\[SECTION\] +Host resources' <<< "${OUT}" && ! grep -qE '\[OK\]|\[FAIL\]|\[CRIT\]' <<< "${OUT}" && r=ok || r=bad; check "doctor uses the logger style only (sections, levels, no checklist tags)" "$r" "$(head -5 <<< "${OUT}")"
+# --- final recommendations, and no repetition inside 00-provision.sh ---
+echo 20 > "${T}/proc/sys/fs/inotify/max_user_watches"; echo 100 > "${T}/proc/sys/fs/inotify/max_user_instances"
+hc() { OUT="$( ( ulimit -Sn 4096 2>/dev/null; HOSTCHECK_OS=linux HOSTCHECK_PROC="${T}/proc" PLAYGROUND_CONTEXT=host "$@" ) 2>&1 </dev/null)"; RC=$?; }
+hc "${CLI}" doctor --recommendations
+[ "${RC}" = 0 ] && grep -qE '\[SECTION\] +Host resource recommendations' <<< "${OUT}" && grep -qE '\[WARN\] +Linux inotify limits \(CRITICAL\)' <<< "${OUT}" && r=ok || r=bad; check "recommendations: a section, with the resource, its severity as (CRITICAL) on a [WARN] line" "$r" "${OUT}"
+grep -q 'max_user_watches   = 20' <<< "${OUT}" && grep -q 'sudo sysctl -w fs.inotify.max_user_instances=8192' <<< "${OUT}" && grep -q 'sudo sysctl -w fs.inotify.max_user_watches=524288' <<< "${OUT}" && r=ok || r=bad; check "recommendations: current value and the exact sysctl commands" "$r" "${OUT}"
+grep -q 'sysctl fs.inotify.max_user_instances fs.inotify.max_user_watches' <<< "${OUT}" && grep -q 'not inside the Playground container' <<< "${OUT}" && grep -q 'sudo sysctl -w fs.inotify.max_user_instances=100' <<< "${OUT}" && grep -q 'sudo sysctl -w fs.inotify.max_user_watches=20' <<< "${OUT}" && r=ok || r=bad; check "recommendations: where the original values are (read them first; listed under Restore)" "$r" "${OUT}"
+grep -q '\[ERROR\]' <<< "${OUT}" && r=bad || r=ok; check "recommendations: no [ERROR] for resource risks" "$r" "${OUT}"
+grep -q 'Nothing was changed' <<< "${OUT}" && r=ok || r=bad; check "recommendations: states that nothing is executed" "$r"
+echo 8192 > "${T}/proc/sys/fs/inotify/max_user_instances"; echo 1048576 > "${T}/proc/sys/fs/inotify/max_user_watches"
+hc "${CLI}" doctor --recommendations
+[ "${RC}" = 0 ] && grep -qE '\[INFO\] +Resource health: all OK' <<< "${OUT}" && ! grep -q 'recommendations' <<< "${OUT}" && r=ok || r=bad; check "recommendations: nothing actionable -> one 'Resource health' line, no section" "$r" "${OUT}"
+# disk pressure advice comes from the same records (df stub on PATH)
+printf '#!/bin/sh\necho "Filesystem 1024-blocks Used Available Capacity Mounted on"\ncase "$*" in *-Pi*) echo "/dev/x 1000000 1000 999000 1%% /m";; *) echo "/dev/x 100000000 99000000 3500000 99%% /m";; esac\n' > "${T}/bin/df"; chmod +x "${T}/bin/df"
+mkdir -p "${T}/dockerroot"
+OUT="$( ( ulimit -Sn 4096 2>/dev/null; export HOSTCHECK_OS=linux HOSTCHECK_PROC="${T}/proc" PLAYGROUND_CONTEXT=host HC_DOCKER_ROOT="${T}/dockerroot"; "${CLI}" doctor --recommendations ) 2>&1 </dev/null)"
+grep -qE '\[WARN\] +Host disk usage \(CRITICAL\)' <<< "${OUT}" && grep -q 'docker system df' <<< "${OUT}" && grep -q 'docker builder du' <<< "${OUT}" && grep -q 'free space manually' <<< "${OUT}" && ! grep -q '\[ERROR\]' <<< "${OUT}" && r=ok || r=bad; check "recommendations: disk pressure -> inspect Docker disk usage, free space manually (never run)" "$r" "${OUT}"
+rm -f "${T}/bin/df"
+# wrapper: no repetition
+: > "${LOG}"; OUT="$(PLAYGROUND_BIND_ADDRESS=0.0.0.0 PLAYGROUND_CONTEXT=host PLAYGROUND_NO_HINT=1 "${CLI}" install 2>&1 </dev/null)"
+[ "$(grep -c 'PLAYGROUND_BIND_ADDRESS 0.0.0.0' <<< "${OUT}")" = 1 ] && ! grep -q 'Next: ./playground start' <<< "${OUT}" && r=ok || r=bad; check "install inside the wrapper: bind warning once, no 'Next:' hint" "$r" "${OUT}"
+OUT="$(PLAYGROUND_BIND_ADDRESS=0.0.0.0 PLAYGROUND_CONTEXT=host "${CLI}" install 2>&1 </dev/null)"
+grep -q 'Next: ./playground start' <<< "${OUT}" && grep -q 'PLAYGROUND_BIND_ADDRESS 0.0.0.0' <<< "${OUT}" && r=ok || r=bad; check "install on its own still shows its hint and the bind warning" "$r" "${OUT}"
+OUT="$(PLAYGROUND_BIND_ADDRESS=0.0.0.0 PLAYGROUND_BIND_WARNED=1 PLAYGROUND_BANNER_DONE=1 PLAYGROUND_WAIT_TIMEOUT=1 PLAYGROUND_CONTEXT=host "${CLI}" start 2>&1 </dev/null)"
+! grep -q 'PLAYGROUND_BIND_ADDRESS 0.0.0.0' <<< "${OUT}" && ! grep -q 'SECTION.*CNPG Operator Playground' <<< "${OUT}" && r=ok || r=bad; check "start inside the wrapper: no second bind warning, no second banner" "$r" "${OUT}"
+OUT="$(PLAYGROUND_BIND_ADDRESS=0.0.0.0 PLAYGROUND_WAIT_TIMEOUT=1 PLAYGROUND_CONTEXT=host "${CLI}" start 2>&1 </dev/null)"
+grep -q 'PLAYGROUND_BIND_ADDRESS 0.0.0.0' <<< "${OUT}" && grep -q 'SECTION.*CNPG Operator Playground' <<< "${OUT}" && r=ok || r=bad; check "start on its own keeps its banner and its bind warning" "$r" "${OUT}"
+grep -q 'log_success "Playground ready!"$' 00-provision.sh && ! grep -q 'Next: ./playground start' 00-provision.sh && [ "$(tail -1 00-provision.sh | grep -c 'doctor --recommendations')" = 1 ] && r=ok || r=bad; check "00-provision.sh: 'Playground ready!', no 'Next:', recommendations last" "$r"
 grep -q "doctor$" 00-provision.sh && r=bad || r=ok; check "00-provision.sh no longer runs doctor twice (install runs it once)" "$r"
 echo; [ "${FAIL}" = 0 ] && echo "ALL CLI TESTS PASSED" || echo "SOME CLI TESTS FAILED"; exit "${FAIL}"

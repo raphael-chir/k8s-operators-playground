@@ -52,10 +52,10 @@ echo 128 > "${T}/proc/sys/fs/inotify/max_user_instances"; echo 65536 > "${T}/pro
 x="$(rec inotify)"
 [ "$(cut -d'|' -f2 <<< "${x}")" = WARNING ] && r=ok || r=bad; check "low inotify limits are a WARNING" "$r" "${x}"
 fix="$(cut -d'|' -f7 <<< "${x}")"; restore="$(cut -d'|' -f8 <<< "${x}")"
-[ "${fix}" = "sudo sysctl -w fs.inotify.max_user_instances=8192;;sudo sysctl -w fs.inotify.max_user_watches=524288" ] && r=ok || r=bad; check "inotify correction = recommended values (8192 / 524288)" "$r" "${fix}"
-[ "${restore}" = "sudo sysctl -w fs.inotify.max_user_instances=128;;sudo sysctl -w fs.inotify.max_user_watches=65536" ] && r=ok || r=bad; check "inotify restore = the previous values" "$r" "${restore}"
+[ "${fix}" = "Run these on the Linux host itself, not inside the Playground container. The values to restore are listed below; to read them again before changing anything:;;\$ sysctl fs.inotify.max_user_instances fs.inotify.max_user_watches;;\$ sudo sysctl -w fs.inotify.max_user_instances=8192;;\$ sudo sysctl -w fs.inotify.max_user_watches=524288" ] && r=ok || r=bad; check "inotify correction: runs on the Linux host (not in the container), reads the current values, then the recommended values (8192 / 524288); commands are marked with '\$ '" "$r" "${fix}"
+[ "${restore}" = "\$ sudo sysctl -w fs.inotify.max_user_instances=128;;\$ sudo sysctl -w fs.inotify.max_user_watches=65536" ] && r=ok || r=bad; check "inotify restore = the previous values" "$r" "${restore}"
 txt="$(run hostcheck_text "${x}")"
-grep -q '^Warning: Linux inotify limits' <<< "${txt}" && grep -q '^Impact:' <<< "${txt}" && grep -q '^  sudo sysctl -w fs.inotify.max_user_instances=8192' <<< "${txt}" && grep -q '^Restore the previous value:' <<< "${txt}" && r=ok || r=bad
+grep -q '^Linux inotify limits$' <<< "${txt}" && grep -q '^Impact:' <<< "${txt}" && grep -q '^  sudo sysctl -w fs.inotify.max_user_instances=8192' <<< "${txt}" && grep -q '^Restore the previous value:' <<< "${txt}" && r=ok || r=bad
 check "the text block shows current / recommended / impact / correction / restore" "$r" "${txt}"
 echo 8192 > "${T}/proc/sys/fs/inotify/max_user_instances"; echo 20 > "${T}/proc/sys/fs/inotify/max_user_watches"
 [ "$(status inotify)" = CRITICAL ] && r=ok || r=bad; check "absurdly low inotify limits are CRITICAL" "$r" "$(status inotify)"
@@ -126,7 +126,7 @@ pf() { ( source engine/lib/logger.sh; source engine/lib/hostcheck.sh; set -Eeuo 
 out="$(pf kind)"; grep -q 'not available' <<< "${out}" && grep -q 'rc=0' <<< "${out}" && r=ok || r=bad; check "no sampler file: an information line, rc 0" "$r" "${out}"
 x="disk|CRITICAL|Host disk usage|99% used, 3.4 GiB available of 100 GiB on /var/lib/docker|less than 85% used|Below 10% free the kubelet reports DiskPressure.|Free disk space before provisioning.|"
 printf '#ts=%s\n%s\n' "$(date +%s)" "${x}" > "${PROJECT_ROOT}/.host-checks"
-out="$(pf k3d)"; grep -q 'ERROR.*Critical: Host disk usage' <<< "${out}" && grep -q 'DiskPressure' <<< "${out}" && grep -q 'Free disk space before provisioning' <<< "${out}" && grep -q 'rc=0' <<< "${out}" && r=ok || r=bad
+out="$(pf k3d)"; grep -q 'WARN.*Host disk usage (CRITICAL)' <<< "${out}" && ! grep -q 'ERROR' <<< "${out}" && grep -q 'DiskPressure' <<< "${out}" && grep -q 'Free disk space before provisioning' <<< "${out}" && grep -q 'rc=0' <<< "${out}" && r=ok || r=bad
 check "k3d start: the disk warning is logged with impact and correction, and does not block (rc 0)" "$r" "${out}"
 out="$(pf external)"; ! grep -q 'DiskPressure' <<< "${out}" && grep -q 'rc=0' <<< "${out}" && r=ok || r=bad; check "external start: no host warning" "$r" "${out}"
 printf '#ts=%s\n%s\n' "$(( $(date +%s) - 3600 ))" "${x}" > "${PROJECT_ROOT}/.host-checks"
@@ -142,6 +142,24 @@ out="$(bash -c 'source "$1/repo/engine/host-metrics.sh"; refresh_checks; write 5
 grep -q '"disk_percent": 40' <<< "${out}" && grep -q '"warnings": 1' <<< "${out}" && grep -q '"warning_titles": "Linux inotify limits"' <<< "${out}" && grep -q '^#ts=' <<< "${out}" && r=ok || r=bad
 check "the sampler writes disk_percent, the warning count/titles and the .host-checks file" "$r" "${out}"
 [ -z "$(grep -n 'sysctl -w' "${SYSCTL_LOG}")" ] && r=ok || r=bad; check "the sampler never modifies a setting" "$r"
+
+# --- advice content: safe read-only diagnostics, consequences named, no Linux commands on macOS ---
+export FAKE_DF_K="100000000 99000000 3500000 99%"; x="$(HOSTCHECK_OS=linux rec disk)"
+fix="$(cut -d'|' -f7 <<< "${x}")"; impact="$(cut -d'|' -f6 <<< "${x}")"
+grep -q ';;\$ docker system df;;\$ docker builder du;;' <<< "${fix}" && r=ok || r=bad; check "disk advice: docker system df and docker builder du, marked as commands" "$r" "${fix}"
+grep -q 'Free disk space before continuing' <<< "${fix}" && grep -q 'must be pulled or rebuilt later' <<< "${fix}" && r=ok || r=bad; check "disk advice: free space before continuing, and what pruning deletes" "$r" "${fix}"
+grep -q 'prune' <<< "$(sed 's/must be pulled.*//' <<< "${fix}" | grep '^\$\|;;\$')" && r=bad || r=ok; check "disk advice: no cleanup command is offered as a command to copy" "$r" "${fix}"
+for w in DiskPressure 'Pods cannot start' 'evicted' 'image pulls fail' 'provisioned or tested'; do grep -q "${w}" <<< "${impact}" && r=ok || r=bad; check "disk impact mentions: ${w}" "$r" "${impact}"; done
+export FAKE_DF_K="100000000 40000000 60000000 40%"
+HOSTCHECK_OS=macos; export HOSTCHECK_OS
+all="$(run hostcheck_collect)"
+grep -q 'sysctl -w\|sudo ' <<< "${all}" && r=bad || r=ok; check "macOS: no Linux command in any record" "$r" "${all}"
+HOSTCHECK_OS=linux; export HOSTCHECK_OS
+echo 128 > "${T}/proc/sys/fs/inotify/max_user_instances"
+x="$(rec inotify)"; grep -q 'not inside the Playground container' <<< "${x}" && r=ok || r=bad; check "inotify advice says where to run the commands (Linux host, not the container)" "$r" "${x}"
+echo 8192 > "${T}/proc/sys/fs/inotify/max_user_instances"
+txt="$(run hostcheck_text "disk|CRITICAL|Host disk usage|99%|<85%|impact|Intro:;;\$ docker system df;;Then.|")"
+grep -q '^  docker system df$' <<< "${txt}" && ! grep -q '^  \$ ' <<< "${txt}" && r=ok || r=bad; check "the text output prints commands without the '\$ ' marker" "$r" "${txt}"
 
 # --- severity counts and the closing summary ---
 sm() { printf '%s\n' "$@" | ( source engine/lib/hostcheck.sh; hostcheck_summary ); }

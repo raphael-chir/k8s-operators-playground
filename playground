@@ -37,16 +37,17 @@ K3D_LABEL="k3d.cluster"                  # k3d marks every container (nodes, loa
 # --- output ------------------------------------------------------------------------------------------------
 # ONE style for the whole CLI, the engine's logger (engine/lib/logger.sh, Bash 3.2 compatible): "[HH:MM:SS] [LEVEL] message", same colors, same
 # level alignment. The short names below only map the CLI's wording onto its levels (no second logger, no other visual style):
-#   ok -> SUCCESS   say / info / hint -> INFO   warn -> WARN   bad / crit / err -> ERROR (stderr)   banner -> SECTION
+#   ok -> SUCCESS   say / info / hint -> INFO   warn -> WARN   bad / err -> ERROR (stderr)   banner -> SECTION
+# ERROR means an execution failure. A resource risk is a WARN (a CRITICAL diagnostic says "(CRITICAL)" in its text), never an ERROR.
 # raw prints unformatted text where a log line would be wrong: --version, usage lines and prompts.
 source "${ROOT}/engine/lib/logger.sh"
 OKS=0; QUIET_OK=0          # QUIET_OK=1 (doctor --compact): successful prerequisite lines are only counted
+BIND_WARNED="${PLAYGROUND_BIND_WARNED:-}"        # set by a wrapper that already showed the bind-address warning
 BANNER_DONE="${PLAYGROUND_BANNER_DONE:-0}"   # 1: a wrapper (00-provision.sh) already showed the banner
 raw()  { printf '%s\n' "$*"; }
 say()  { [ -n "$*" ] || return 0; log_info "$*"; }           # blank spacer lines are dropped: the logger needs no separators
 ok()   { OKS=$((OKS + 1)); [ "${QUIET_OK}" = 1 ] || log_success "$*"; }
 warn() { log_warn "$*"; }
-crit() { log_error "$*"; }
 na()   { log_info "$*"; }
 bad()  { log_error "$*"; }
 err()  { log_error "$@"; }
@@ -227,28 +228,43 @@ owned_clusters() { owned_nodes | awk '{print $1}' | sort -u; }
 # doctor
 # =============================================================================================================
 load_hostcheck() { [ -n "$(type -t hostcheck_collect)" ] || . "${ROOT}/engine/lib/hostcheck.sh"; }
-# One resource finding as a single aligned line (ERROR for CRITICAL, WARN for WARNING): title, first current value, then the impact.
+# One resource finding as a single aligned WARN line (with "(CRITICAL)" when it is): title, first current value, then the impact.
 resource_line() {   # <record>
   local rid rst rtitle rcur rrec rimpact; IFS='|' read -r rid rst rtitle rcur rrec rimpact _ <<< "$1"
   local text; text="$(printf '%-24s %s' "${rtitle}" "${rcur%%;;*}")"
-  if [ "${rst}" = CRITICAL ]; then crit "${text}"; else warn "${text}"; fi
+  [ "${rst}" != CRITICAL ] || text="${text} (CRITICAL)"
+  warn "${text}"
   [ -z "${rimpact}" ] || hint "${rimpact}"
 }
 # The full block of `doctor` (current / recommended / impact / correction / restore), through the shared logger.
 resource_block() { hostcheck_log "$1"; }
 # "Resource health: all OK | 1 critical, 1 warning, 1 unavailable": the closing line of an installation (advisory).
+# doctor --recommendations (the end of 00-provision.sh): a section only when a WARNING or CRITICAL finding exists, built from the same hostcheck
+# records as `doctor` (current value, severity, impact, manual correction and restore commands). Nothing is executed. Otherwise one line.
+resource_recommendations() {
+  load_hostcheck
+  local recs issues rec
+  recs="$(hostcheck_collect)"
+  issues="$(printf '%s\n' "${recs}" | awk -F'|' '$2 == "WARNING" || $2 == "CRITICAL"')"
+  if [ -z "${issues}" ]; then say "Resource health: $(hostcheck_summary <<< "${recs}")"; return 0; fi
+  log_section "Host resource recommendations"
+  while IFS= read -r rec; do hostcheck_log "${rec}"; done <<< "${issues}"
+  log_info "Nothing was changed: these corrections are for you to run, and only if you want to."
+}
 resource_health_line() {
   load_hostcheck
   say "Resource health: $(hostcheck_collect | hostcheck_summary)"
 }
 
-# doctor [--compact] [--summary]: prerequisites (blocking) and host resources (advisory, never changes the exit code).
-#   --compact  successful prerequisite lines are counted instead of listed (used by install);  --summary  only the one-line resource health.
+# doctor [--compact] [--summary] [--recommendations]: prerequisites (blocking) and host resources (advisory, never changes the exit code).
+#   --compact  successful prerequisite lines are counted instead of listed (used by install);  --summary  only the one-line resource health;
+#   --recommendations  the "Host resource recommendations" section, only when there is something to act on (end of 00-provision.sh).
 cmd_doctor() {
-  local fails=0 warns=0 os="" arch="" ver major info ncpu mem gib compact=0 summary=0
-  while [ $# -gt 0 ]; do case "$1" in --compact) compact=1 ;; --summary) summary=1 ;; *) err "Unknown option for doctor: $1"; return 2 ;; esac; shift; done
+  local fails=0 warns=0 os="" arch="" ver major info ncpu mem gib compact=0 summary=0 recs_only=0
+  while [ $# -gt 0 ]; do case "$1" in --compact) compact=1 ;; --summary) summary=1 ;; --recommendations) recs_only=1 ;; *) err "Unknown option for doctor: $1"; return 2 ;; esac; shift; done
   if in_container; then err "doctor checks the host: run it outside the Playground container."; return 2; fi
   if [ "${summary}" -eq 1 ]; then resource_health_line; return 0; fi
+  if [ "${recs_only}" -eq 1 ]; then resource_recommendations; return 0; fi
   [ "${compact}" -eq 0 ] || QUIET_OK=1
   OKS=0
   banner; log_section "Prerequisites"
@@ -392,7 +408,7 @@ cmd_install() {
   log_success "Playground image built"
   say
   log_info "Installed. No cluster and no use case was created."
-  log_info "Next: ./playground start"
+  [ -n "${PLAYGROUND_NO_HINT:-}" ] || log_info "Next: ./playground start"      # 00-provision.sh starts right after: no hint there
 }
 
 # Host-side CPU/RAM sampler for the resource bar (engine/host-metrics.sh): the container cannot see the real host. One instance (pid file),

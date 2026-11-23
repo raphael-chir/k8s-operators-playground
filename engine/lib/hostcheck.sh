@@ -4,7 +4,8 @@
 #
 # A record is one line:  id|STATUS|title|current|recommended|impact|fix|restore
 #   STATUS: OK | WARNING | CRITICAL | UNAVAILABLE (cannot be measured reliably here: never replaced by a container figure)
-#   ";;" separates the lines inside current / recommended / fix / restore.
+#   ";;" separates the lines inside current / recommended / fix / restore. In fix and restore a line starting with "$ " is a COMMAND (the text
+#   output prints it without the "$ "; the dashboard shows it in a copyable block); any other line is an explanation.
 # The thresholds are advisory (they only choose a severity, nothing is ever blocked): disk and inode levels follow the kubelet's default
 # eviction thresholds (DiskPressure below 10% free), inotify values are the usual Kind/k3d recommendation, not a Kubernetes requirement.
 # Test hooks: HOSTCHECK_OS (macos|linux|wsl2), HOSTCHECK_PROC (default /proc), and PATH stubs for df, sysctl, vm_stat, docker.
@@ -98,8 +99,8 @@ _hc_disk() {
     return
   fi
   local cur="${pct}% used, $(_hc_kb "${a}") available of $(_hc_kb "${t}") on ${p}"
-  local impact="Below 10% free the kubelet reports DiskPressure: Pods are evicted or cannot be scheduled and image pulls fail (Kind/k3d nodes live on this disk)."
-  local fix="Free disk space before provisioning. Review first, then for example: docker image prune (the Playground never runs it for you)"
+  local impact="Free disk space may run out while Kubernetes is provisioned or tested (Kind/k3d nodes live on this disk). Below 10% free the kubelet reports DiskPressure: Pods cannot start or are evicted, and image pulls fail."
+  local fix="Free disk space before continuing. First see what Docker uses (read-only commands):;;\$ docker system df;;\$ docker builder du;;Then free space manually (the Playground never runs it for you). Pruning deletes unused images, stopped containers or build cache, which must be pulled or rebuilt later: review the output above first."
   [ "${env}" != macos ] || fix="${fix};;Docker Desktop also has its own disk image limit (Settings > Resources > Disk image size)"
   if [ "${pct}" -ge 90 ]; then _hc_rec disk CRITICAL "Host disk usage" "${cur}" "less than 85% used" "${impact}" "${fix}" ""
   elif [ "${pct}" -ge 85 ]; then _hc_rec disk WARNING "Host disk usage" "${cur}" "less than 85% used" "${impact}" "${fix}" ""
@@ -116,7 +117,7 @@ _hc_inodes() {
   fi
   local cur="${pct}% used, ${free} free of ${total} on ${p}"
   local impact="Without free inodes nothing new can be created, even with free space: image pulls and containerd fail, and the kubelet reports DiskPressure."
-  local fix="Remove unused images and containers (review first): docker system df, then docker image prune"
+  local fix="See what Docker uses (read-only):;;\$ docker system df;;Then remove unused images and containers manually, after reviewing them (the Playground never runs it for you)."
   if [ "${pct}" -ge 95 ]; then _hc_rec inodes CRITICAL "Host inodes" "${cur}" "less than 90% used" "${impact}" "${fix}" ""
   elif [ "${pct}" -ge 90 ]; then _hc_rec inodes WARNING "Host inodes" "${cur}" "less than 90% used" "${impact}" "${fix}" ""
   else _hc_rec inodes OK "Host inodes" "${cur}" "" "" "" ""; fi
@@ -137,14 +138,16 @@ _hc_inotify() {
   local rec="max_user_instances = ${HC_INOTIFY_INSTANCES};;max_user_watches   = ${HC_INOTIFY_WATCHES}"
   local fix="" restore="" status=OK
   if [ "${inst}" -lt "${HC_INOTIFY_INSTANCES}" ]; then
-    fix="sudo sysctl -w fs.inotify.max_user_instances=${HC_INOTIFY_INSTANCES}"; restore="sudo sysctl -w fs.inotify.max_user_instances=${inst}"
+    fix="\$ sudo sysctl -w fs.inotify.max_user_instances=${HC_INOTIFY_INSTANCES}"; restore="\$ sudo sysctl -w fs.inotify.max_user_instances=${inst}"
   fi
   if [ "${watch}" -lt "${HC_INOTIFY_WATCHES}" ]; then
-    fix="${fix:+${fix};;}sudo sysctl -w fs.inotify.max_user_watches=${HC_INOTIFY_WATCHES}"; restore="${restore:+${restore};;}sudo sysctl -w fs.inotify.max_user_watches=${watch}"
+    fix="${fix:+${fix};;}\$ sudo sysctl -w fs.inotify.max_user_watches=${HC_INOTIFY_WATCHES}"; restore="${restore:+${restore};;}\$ sudo sysctl -w fs.inotify.max_user_watches=${watch}"
   fi
   [ "${inst}" -ge 512 ] && [ "${watch}" -ge 262144 ] || status=WARNING
   { [ "${inst}" -ge 64 ] && [ "${watch}" -ge 8192 ]; } || status=CRITICAL
   if [ "${status}" = OK ]; then _hc_rec inotify OK "inotify limits" "${cur}" "" "" "" ""; return; fi
+  # the original values: read them now (and they are listed under "Restore" below), because after the change sysctl shows the new ones
+  fix="Run these on the Linux host itself, not inside the Playground container. The values to restore are listed below; to read them again before changing anything:;;\$ sysctl fs.inotify.max_user_instances fs.inotify.max_user_watches;;${fix}"
   if [ "${env}" = wsl2 ]; then
     fix="${fix};;(run inside the WSL2 distro: all WSL2 distros and Docker Desktop's WSL2 backend share one kernel; the change is lost after: wsl --shutdown)"
   fi
@@ -159,7 +162,7 @@ _hc_fds() {
   if [ "${n}" = unlimited ] || [ "${n}" -ge 1024 ]; then _hc_rec fds OK "Open-file limit (ulimit -n)" "${n}" "" "" "" ""
   else _hc_rec fds WARNING "Open-file limit (ulimit -n)" "${n}" "1024 or more" \
     "Limit of this shell and the tools it starts (kubectl, helm, kind); containers use Docker's own limit, set by its service." \
-    "ulimit -n 65536   (this shell only; the hard limit applies)" "ulimit -n ${n}"; fi
+    "In this shell only (the hard limit applies):;;\$ ulimit -n 65536" "\$ ulimit -n ${n}"; fi
 }
 
 # hostcheck_collect [provider]: every record. An external provider's cluster is not on this host: no host check applies to it.
@@ -191,20 +194,19 @@ hostcheck_text() {
   local rec="$1" id st title cur recm impact fix restore l
   IFS='|' read -r id st title cur recm impact fix restore <<< "${rec}"
   _blk() { [ -z "$2" ] || { printf '%s\n' "$1"; printf '%s\n' "$2" | sed 's/;;/\
-/g; s/^/  /'; }; }
-  case "${st}" in CRITICAL) printf 'Critical: %s\n' "${title}" ;; *) printf 'Warning: %s\n' "${title}" ;; esac
+/g' | sed 's/^\$ //; s/^/  /'; }; }
+  case "${st}" in CRITICAL) printf '%s (CRITICAL)\n' "${title}" ;; *) printf '%s\n' "${title}" ;; esac
   _blk "Current:" "${cur}"; _blk "Recommended:" "${recm}"; _blk "Impact:" "${impact}"
   _blk "Correction (manual; the Playground never runs it):" "${fix}"; _blk "Restore the previous value:" "${restore}"
   unset -f _blk
 }
 
-# hostcheck_log <record>: that block through the shared logger (engine/lib/logger.sh must be sourced): the title line at its level (CRITICAL = ERROR,
-# WARNING = WARN), the details as INFO lines.
+# hostcheck_log <record>: that block through the shared logger (engine/lib/logger.sh must be sourced): the title line as a WARN (a resource risk is
+# not an execution failure, so never ERROR; a CRITICAL diagnostic says "(CRITICAL)"), the details as INFO lines.
 hostcheck_log() {
-  local st; st="$(printf '%s' "$1" | cut -d'|' -f2)"
   hostcheck_text "$1" | {
     IFS= read -r l
-    if [ "${st}" = CRITICAL ]; then log_error "${l}"; else log_warn "${l}"; fi
+    log_warn "${l}"
     while IFS= read -r l; do log_info "${l}"; done
   }
 }

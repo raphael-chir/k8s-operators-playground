@@ -427,6 +427,7 @@ def _host_metrics():
             return None
         # disk and diagnostics come from the same host-side checks as `./playground doctor`; absent (older sampler) = unknown
         extra = {k: m.get(k) for k in ("disk_percent", "disk_avail_bytes", "disk_total_bytes", "warnings", "critical", "warning_titles")}
+        extra["issues"] = operations.host_issues(HOST_CHECKS_FILE, "internal")      # the findings behind the warning marker (clickable in the page)
         return {**{k: m[k] for k in ("cpu_percent", "cpus", "mem_used_bytes", "mem_total_bytes")}, "os": m.get("os", "unknown"), **extra}
     except (OSError, ValueError, KeyError, TypeError):
         return None

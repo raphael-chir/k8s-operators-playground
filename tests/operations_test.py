@@ -122,6 +122,23 @@ class HostIssuesTest(unittest.TestCase):
         f.write_text(f"#ts={time.time() - age}\n{body}")
         return f
 
+    def test_commands_and_restore_are_structured_for_the_page(self):
+        body = ("inotify|WARNING|Linux inotify limits|max_user_instances = 128;;max_user_watches   = 65536|max_user_instances = 8192;;max_user_watches   = 524288|Kind may fail.|"
+                "Run these on the Linux host itself.;;$ sudo sysctl -w fs.inotify.max_user_instances=8192;;$ sudo sysctl -w fs.inotify.max_user_watches=524288|"
+                "$ sudo sysctl -w fs.inotify.max_user_instances=128;;$ sudo sysctl -w fs.inotify.max_user_watches=65536\n")
+        (issue,) = operations.host_issues(self.write(body=body), "internal")
+        self.assertEqual(issue["current_lines"], ["max_user_instances = 128", "max_user_watches   = 65536"])
+        self.assertEqual(issue["recommended"], "max_user_instances = 8192 / max_user_watches   = 524288")
+        self.assertEqual(issue["fix"][0], {"text": "Run these on the Linux host itself.", "command": False})
+        self.assertEqual([s["text"] for s in issue["fix"] if s["command"]],
+                         ["sudo sysctl -w fs.inotify.max_user_instances=8192", "sudo sysctl -w fs.inotify.max_user_watches=524288"])
+        self.assertEqual([s["text"] for s in issue["restore"]], ["sudo sysctl -w fs.inotify.max_user_instances=128", "sudo sysctl -w fs.inotify.max_user_watches=65536"])
+        self.assertTrue(all(s["command"] for s in issue["restore"]))
+
+    def test_the_resource_bar_gets_the_same_findings(self):
+        src = (Path(__file__).resolve().parent.parent / "web" / "app.py").read_text()
+        self.assertIn('extra["issues"] = operations.host_issues(HOST_CHECKS_FILE, "internal")', src)
+
     def test_issues_are_critical_and_warning_only(self):
         issues = operations.host_issues(self.write(), "internal")
         self.assertEqual([i["id"] for i in issues], ["disk", "inotify"])          # UNAVAILABLE is not an issue

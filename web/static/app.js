@@ -419,23 +419,32 @@ async function start(name, confirmResources) {
 
 const dialog = document.getElementById("confirm");
 let stopTarget = null;
-// One dialog, three uses: Stop, Cancel (a start in progress) and the resource confirmation before a start.
+// One dialog, four uses: Stop, Cancel (a start in progress), the resource confirmation before a start (cards), and the read-only view of the
+// host resource findings behind the warning marker of the resource bar (cards, Close only).
 const confirmList = dialog.querySelector("ul"), stopItems = confirmList.innerHTML, confirmOk = document.getElementById("confirm-ok");
+const confirmCards = document.getElementById("confirm-cards"), confirmCancel = document.getElementById("confirm-cancel"), confirmTitle = dialog.querySelector("h3");
 let confirmMode = "stop";
+function setDialog(mode, prefix, name, suffix, cards) {      // cards: null = the plain stop list
+  confirmMode = mode;
+  confirmTitle.firstChild.textContent = prefix; document.getElementById("confirm-name").textContent = name; confirmTitle.lastChild.textContent = suffix;
+  confirmList.hidden = !!cards; confirmCards.hidden = !cards; dialog.classList.toggle("wide", !!cards);
+  confirmOk.hidden = mode === "info"; confirmCancel.textContent = mode === "info" ? "Close" : "Cancel";
+  if (cards) ResourceCards.render(document, confirmCards, cards);
+  else { confirmList.innerHTML = stopItems; confirmOk.textContent = "Delete clusters"; }
+}
 function askStop(name, cancelling) {
-  stopTarget = name; confirmMode = "stop";
-  document.getElementById("confirm-name").textContent = name;
-  dialog.querySelector("h3").firstChild.textContent = cancelling ? "Cancel the start of " : "Stop ";
-  confirmList.innerHTML = stopItems; confirmOk.textContent = "Delete clusters";
+  stopTarget = name;
+  setDialog("stop", cancelling ? "Cancel the start of " : "Stop ", name, "?", null);
   dialog.showModal();
 }
 function askResources(name, issues) {
-  stopTarget = name; confirmMode = "resources";
-  document.getElementById("confirm-name").textContent = name;
-  dialog.querySelector("h3").firstChild.textContent = "Resource warnings before starting ";
-  confirmList.replaceChildren(...issues.map(i => { const li = document.createElement("li"); li.textContent = `${i.status === "CRITICAL" ? "Critical" : "Warning"}: ${i.title} (${i.current}). ${i.impact}`; return li; }),
-    Object.assign(document.createElement("li"), { textContent: "Nothing has been started. Details and corrections: ./playground doctor" }));
+  stopTarget = name;
+  setDialog("resources", "Resource warnings before starting ", name, "", issues);
   confirmOk.textContent = "Continue anyway";
+  dialog.showModal();
+}
+function showResourceInfo(issues) {
+  setDialog("info", "Host resource warnings", "", "", issues);
   dialog.showModal();
 }
 document.getElementById("confirm-cancel").onclick = () => dialog.close();
@@ -638,11 +647,16 @@ function usageItem(label, fraction, tip) {          // fraction null = not avail
   }
   return item;
 }
-// Compact warning of the host diagnostics (same checks as ./playground doctor); not clickable, the details are in the terminal.
+// Compact warning of the host diagnostics (same checks as ./playground doctor), shown only while there is a WARNING or CRITICAL finding;
+// clicking it opens the read-only details (cards, with copyable commands).
 function alertItem(h) {
-  const item = sbEl("span", "res-item res-alert lvl-" + (h.critical > 0 ? "crit" : "warn"));
-  item.title = `${h.warning_titles || "Host resource warning"}\nDetails and corrections: ./playground doctor`;
-  item.append(sbEl("b", "res-pct", `⚠ ${h.warnings}`));
+  const issues = h.issues, critical = issues.some(i => i.status === "CRITICAL");
+  const item = sbEl("button", "res-item res-alert lvl-" + (critical ? "crit" : "warn"));
+  item.type = "button";
+  item.title = issues.map(i => `${i.title}${i.status === "CRITICAL" ? " (CRITICAL)" : ""}`).join("\n") + "\nClick for details and corrections";
+  item.setAttribute("aria-label", `${issues.length} host resource warning${issues.length === 1 ? "" : "s"}: show details`);
+  item.append(sbEl("b", "res-pct", `⚠ ${issues.length}`));
+  item.onclick = () => showResourceInfo(issues);
   return item;
 }
 const countItem = (label, value, tip, unit) => { const i = sbEl("span", "res-item"); i.title = tip; i.append(...(label ? [sbEl("span", "res-lbl", label)] : []), sbEl("b", "", value), ...(unit ? [sbEl("span", "res-lbl", unit)] : [])); return i; };
@@ -659,7 +673,7 @@ function renderResources() {
     usageItem("CPU", h ? h.cpu_percent / 100 : null, h ? `Host CPU: ${h.cpu_percent.toFixed(1)}% of ${h.cpus} logical CPUs` : "Host metrics are not available (no host-side sampler running)"),
     usageItem("RAM", h ? h.mem_used_bytes / h.mem_total_bytes : null, h ? `Host RAM: ${fmtBytes(h.mem_used_bytes)} used of ${fmtBytes(h.mem_total_bytes)}` : "Host metrics are not available (no host-side sampler running)"),
     usageItem("Disk", h && h.disk_percent != null ? h.disk_percent / 100 : null, h && h.disk_percent != null ? `Host disk: ${h.disk_percent}% used, ${fmtBytes(h.disk_avail_bytes)} available of ${fmtBytes(h.disk_total_bytes)}` : "Host disk usage is not available here"),
-    ...(h && h.warnings > 0 ? [alertItem(h)] : []));
+    ...(h && h.issues && h.issues.length ? [alertItem(h)] : []));
   if (d && d.engine && d.playground) {
     const e = d.engine, p = d.playground, cores = p.cpu_percent / 100;   // Docker: 100% = one logical CPU
     section(icon("docker.svg", "Docker", "#2496ed"),
